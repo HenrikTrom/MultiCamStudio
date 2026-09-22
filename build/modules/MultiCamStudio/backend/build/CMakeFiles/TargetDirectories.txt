@@ -1,0 +1,4 @@
+/home/docker/workspace/workspace/flirmulticamera_gui/backend/build/CMakeFiles/fast_flir_web_streamer.dir
+/home/docker/workspace/workspace/flirmulticamera_gui/backend/build/CMakeFiles/flir_recorder.dir
+/home/docker/workspace/workspace/flirmulticamera_gui/backend/build/CMakeFiles/edit_cache.dir
+/home/docker/workspace/workspace/flirmulticamera_gui/backend/build/CMakeFiles/rebuild_cache.dir

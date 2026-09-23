@@ -526,7 +526,7 @@ function localCalibrationApi(): Plugin {
 
 export default defineConfig({
   plugins: [localCalibrationApi(), react()],
-  publicDir: false,
+  publicDir: "public",
   server: {
     port: 5173,
     strictPort: true,

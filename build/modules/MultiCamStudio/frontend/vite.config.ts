@@ -9,20 +9,20 @@ import { request as httpRequest, type IncomingMessage, type ServerResponse } fro
 import { dirname } from "node:path";
 
 const calibrationStages = [
-  { id: "capture", label: "Capture", script: "/home/docker/workspace/workspace/flirmulticamera_gui/backend/scripts/record.sh" },
-  { id: "calibrate", label: "Calibrate", script: "/home/docker/workspace/workspace/flirmulticamera_gui/backend/scripts/calibrate.sh" },
-  { id: "validate", label: "Validate", script: "/home/docker/workspace/workspace/flirmulticamera_gui/backend/scripts/validate.sh" },
+  { id: "capture", label: "Capture", script: "/home/docker/workspace/build/modules/MultiCamStudio/backend/scripts/record.sh" },
+  { id: "calibrate", label: "Calibrate", script: "/home/docker/workspace/build/modules/MultiCamStudio/backend/scripts/calibrate.sh" },
+  { id: "validate", label: "Validate", script: "/home/docker/workspace/build/modules/MultiCamStudio/backend/scripts/validate.sh" },
 ] as const;
 const calibrationResult =
   "/home/docker/workspace/workspace/multi-camera-calib/test/back_projeced3d.jpg";
 const calibrationGuide =
-  "/home/docker/workspace/workspace/flirmulticamera_gui/content/result.gif";
+  "/home/docker/workspace/build/modules/MultiCamStudio/content/result.gif";
 const calibrationLogsDirectory =
   "/home/docker/workspace/workspace/multi-camera-calib/data/logs";
 const cameraStreamerExecutable = process.env.FLIR_STREAMER_EXECUTABLE ??
-  "/home/docker/workspace/workspace/flirmulticamera_gui/backend/build/fast_flir_web_streamer";
+  "/home/docker/workspace/build/modules/MultiCamStudio/backend/build/fast_flir_web_streamer";
 const recorderExecutable = process.env.FLIR_RECORDER_EXECUTABLE ??
-  "/home/docker/workspace/workspace/flirmulticamera_gui/backend/build/flir_recorder";
+  "/home/docker/workspace/build/modules/MultiCamStudio/backend/build/flir_recorder";
 const cameraStreamerPort = 8080;
 let cameraStreamerProcess: ReturnType<typeof spawn> | null = null;
 let recorderProcess: ReturnType<typeof spawn> | null = null;
@@ -32,13 +32,13 @@ let nextProcessLogId = 1;
 let cameraStreamerLogs: ProcessLog[] = [];
 let recorderLogs: ProcessLog[] = [];
 const settingsDocuments = {
-  calibration: {
-    file: "/home/docker/workspace/workspace/multi-camera-calib/cfg/CameraCalibrationSettings.json",
-    schema: "/home/docker/workspace/workspace/multi-camera-calib/cfg/CameraCalibrationSettings.schema.json",
-  },
   camera: {
     file: "/home/docker/workspace/cfg/camera_settings_1024x768.json",
-    schema: "/home/docker/workspace/build/dependencies/flirmulticamera/cfg/CameraSettings.Schema.json",
+    schema: "/opt/modules/flirmulticamera/cfg/CameraSettings.Schema.json",
+  },
+  calibration: {
+    file: "/home/docker/workspace/cfg/CameraCalibrationSettings.json",
+    schema: "/opt/modules/multi-camera-calib/cfg/CameraCalibrationSettings.schema.json",
   },
 } as const;
 

@@ -1,3 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+
 test -e ${OPENCV_VERSION}.zip || wget https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_VERSION}.zip
 test -e opencv-${OPENCV_VERSION} || unzip ${OPENCV_VERSION}.zip
 test -e opencv_extra_${OPENCV_VERSION}.zip || wget -O opencv_extra_${OPENCV_VERSION}.zip https://github.com/opencv/opencv_contrib/archive/refs/tags/${OPENCV_VERSION}.zip
@@ -5,17 +8,11 @@ test -e opencv_contrib-${OPENCV_VERSION} || unzip opencv_extra_${OPENCV_VERSION}
 
 cd opencv-${OPENCV_VERSION}
 
-# Check if the build directory exists
-directory="build"
-if [ -d "$directory" ]; then
-    echo "Found build"
-    cd build
-else
-    echo "Re-building opencv-${OPENCV_VERSION}"
-    mkdir build
-    cd build
+# Reconfigure existing builds too, so changed options are applied.
+mkdir -p build
+cd build
 
-    cmake -D CMAKE_BUILD_TYPE=RELEASE \
+cmake -D CMAKE_BUILD_TYPE=RELEASE \
     -D CMAKE_CXX_FLAGS="${CPP_OPTIMIZATIONS}" \
     -D CMAKE_C_FLAGS="${CPP_OPTIMIZATIONS}" \
     -D CMAKE_INSTALL_PREFIX=/usr/local/ \
@@ -25,9 +22,8 @@ else
     -D WITH_CUBLAS=1 \
     -D WITH_CUDA=ON \
     -D BUILD_opencv_cudacodec=ON \
-    -D WITH_CUDNN=ON \
-    -D CUDNN_ROOT=/usr \
-    -D OPENCV_DNN_CUDA=ON \
+    -D WITH_CUDNN=OFF \
+    -D OPENCV_DNN_CUDA=OFF \
     -D WITH_ARUCO=ON \
     -D WITH_QT=OFF \
     -D WITH_OPENGL=ON \
@@ -43,9 +39,9 @@ else
     -D CUDA_ARCH_BIN=${CUDA_ARCH_BIN} \
     -D WITH_FFMPEG=ON \
     ..
-fi
 
-sudo make -j$(nproc)
-sudo make install
+cmake --build . --parallel "$(nproc)"
+sudo "$(command -v cmake)" --install .
+test -s /usr/local/lib/cmake/opencv4/OpenCVConfig.cmake
 
 cd ../.. && rm ${OPENCV_VERSION}.zip && rm opencv_extra_${OPENCV_VERSION}.zip

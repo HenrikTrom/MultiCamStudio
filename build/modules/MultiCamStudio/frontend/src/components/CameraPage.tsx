@@ -5,10 +5,10 @@ import CameraStream, { type FocusPeakingSettings, type HistogramData } from "./C
 import LogPanel from "./LogPanel";
 
 const emptyHistogram = (): HistogramData => ({
-  red: Array(32).fill(0),
-  green: Array(32).fill(0),
-  blue: Array(32).fill(0),
-  luminance: Array(32).fill(0),
+  red: Array(256).fill(0),
+  green: Array(256).fill(0),
+  blue: Array(256).fill(0),
+  luminance: Array(256).fill(0),
 });
 
 function Histogram({ data }: { data: HistogramData }) {
@@ -20,24 +20,23 @@ function Histogram({ data }: { data: HistogramData }) {
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.fillStyle = "#111814";
     context.fillRect(0, 0, canvas.width, canvas.height);
-    const draw = (values: number[], color: string, width: number) => {
-      context.beginPath();
+    context.save();
+    context.globalAlpha = 0.5;
+    const draw = (values: number[], color: string) => {
+      const binWidth = canvas.width / values.length;
+      context.fillStyle = color;
       values.forEach((value, index) => {
-        const x = index / (values.length - 1) * canvas.width;
-        const y = canvas.height - value * (canvas.height - 6) - 3;
-        if (index === 0) context.moveTo(x, y);
-        else context.lineTo(x, y);
+        const height = value * (canvas.height - 6);
+        context.fillRect(index * binWidth, canvas.height - 3 - height, binWidth, height);
       });
-      context.strokeStyle = color;
-      context.lineWidth = width;
-      context.stroke();
     };
-    draw(data.luminance, "#e5ebe7", 1.6);
-    draw(data.red, "#ef6660", 1);
-    draw(data.green, "#5fc681", 1);
-    draw(data.blue, "#6295e7", 1);
+    draw(data.luminance, "#e5ebe7");
+    draw(data.red, "#ef6660");
+    draw(data.green, "#5fc681");
+    draw(data.blue, "#6295e7");
+    context.restore();
   }, [data]);
-  return <canvas ref={canvasRef} width={420} height={72} aria-label="RGB and luminance histogram" />;
+  return <canvas ref={canvasRef} width={512} height={72} aria-label="256-bin RGB and luminance histogram" />;
 }
 
 function CameraTile({ camera, focus }: { camera: Camera; focus: FocusPeakingSettings }) {

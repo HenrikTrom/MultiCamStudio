@@ -3,6 +3,7 @@ services:
   multicamstudio: 
     build:
       context: ./build
+      # target: multicamstudio
       args:
         UBUNTU_IMAGE_VERSION: ${UBUNTU_IMAGE_VERSION}
         CUDA_VERSION: ${CUDA_VERSION}
@@ -17,7 +18,8 @@ services:
     image: my/${TAG1}
 
     network_mode: host
-    command: tail -f /dev/null
+    # command: tail -f /dev/null
+    command: /home/docker/workspace/startup.sh
     tty: true
     runtime: nvidia
   
@@ -29,6 +31,8 @@ services:
       DEBUG_COLORS: "true"
       COLORTERM: truecolor
       CAMERA_SETTINGS_FILE: ${CAMERA_SETTINGS_FILE}
+      CAMERA_CALIBRATION_FILE: ${CAMERA_CALIBRATION_FILE}
+      CALIBRATION_DATA: ${CALIBRATION_DATA}
       # SSH_AUTH_SOCK: /ssh-agent # for github dev
     volumes: 
       - ./:/home/docker/workspace

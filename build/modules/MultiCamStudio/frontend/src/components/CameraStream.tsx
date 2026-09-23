@@ -278,18 +278,18 @@ export default function CameraStream({
       try {
         context.drawImage(video, 0, 0, sample.width, sample.height);
         const pixels = context.getImageData(0, 0, sample.width, sample.height).data;
-        const red = Array<number>(32).fill(0);
-        const green = Array<number>(32).fill(0);
-        const blue = Array<number>(32).fill(0);
-        const luminance = Array<number>(32).fill(0);
+        const red = Array<number>(256).fill(0);
+        const green = Array<number>(256).fill(0);
+        const blue = Array<number>(256).fill(0);
+        const luminance = Array<number>(256).fill(0);
         for (let index = 0; index < pixels.length; index += 4) {
           const r = pixels[index];
           const g = pixels[index + 1];
           const b = pixels[index + 2];
-          red[Math.min(31, r >> 3)]++;
-          green[Math.min(31, g >> 3)]++;
-          blue[Math.min(31, b >> 3)]++;
-          luminance[Math.min(31, Math.floor((0.2126 * r + 0.7152 * g + 0.0722 * b) / 8))]++;
+          red[r]++;
+          green[g]++;
+          blue[b]++;
+          luminance[Math.min(255, Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b))]++;
         }
         const maximum = Math.max(1, ...red, ...green, ...blue, ...luminance);
         onHistogram({

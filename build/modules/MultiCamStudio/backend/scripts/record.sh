@@ -7,13 +7,14 @@ for ((counter = 10; counter >= 0; counter--)); do
     sleep 1
 done
 
-calib_dir=/home/docker/workspace/workspace/multi-camera-calib
+calib_dir=/home/docker/workspace/build/modules/multi-camera-calib
+mcs_dir=/home/docker/workspace/build/modules/MultiCamStudio
 
-input_dir=$calib_dir/data/videos
-output_dir=$calib_dir/data/images
+input_dir=$CALIBRATION_DATA/calib_videos
+output_dir=$CALIBRATION_DATA/calib_images
 
 # create backup of old calibration
-/usr/bin/python3 $calib_dir/scripts/create_backup.py
+/usr/bin/python3 $mcs_dir/scripts/create_backup.py $CALIBRATION_DATA/logs
 
 # ----------------------------------------------------------------
 # Comment out if you have your own camera api/synchronized images

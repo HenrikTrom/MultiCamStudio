@@ -1,0 +1,9 @@
+[submodule "build/modules/multi-camera-calib"]
+	path = build/modules/multi-camera-calib
+	url = https://github.com/HenrikTrom/multi-camera-calib.git
+[submodule "build/modules/flirmulticamera"]
+	path = build/modules/flirmulticamera
+	url = https://github.com/HenrikTrom/flirmulticamera.git
+[submodule "build/modules/cpp_utils"]
+	path = build/modules/cpp_utils
+	url = https://github.com/HenrikTrom/cpp_utils.git

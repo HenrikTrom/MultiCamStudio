@@ -73,7 +73,15 @@ function Scene({ data, referenceSerial }: { data: CalibrationData; referenceSeri
   const dragRef = useRef<{ x: number; y: number } | null>(null);
   const [size, setSize] = useState({ width: 800, height: 540 });
   const [view, setView] = useState({ yaw: 0, pitch: 0, zoom: 1 });
+  const [darkMode, setDarkMode] = useState(() => document.documentElement.dataset.theme === "dark");
   const cameras = useMemo(() => cameraGeometry(data), [data]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const observer = new MutationObserver(() => setDarkMode(root.dataset.theme === "dark"));
+    observer.observe(root, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     setView({ yaw: 0, pitch: 0, zoom: 1 });
@@ -150,11 +158,11 @@ function Scene({ data, referenceSerial }: { data: CalibrationData; referenceSeri
       context.fillStyle = camera.color;
       context.fill();
       context.font = "600 11px Inter, sans-serif";
-      context.fillStyle = "#26332b";
+      context.fillStyle = darkMode ? "#e4e7e9" : "#26332b";
       const status = `${camera.main ? " · main" : ""}${selected ? " · reference" : ""}`;
       context.fillText(`${camera.serial}${status}`, point.x + 9, point.y - 8);
     });
-  }, [cameras, data.CAMERAS, referenceSerial, size, view]);
+  }, [cameras, data.CAMERAS, darkMode, referenceSerial, size, view]);
 
   return (
     <canvas
@@ -169,7 +177,7 @@ function Scene({ data, referenceSerial }: { data: CalibrationData; referenceSeri
         const dx = event.clientX - dragRef.current.x;
         const dy = event.clientY - dragRef.current.y;
         dragRef.current = { x: event.clientX, y: event.clientY };
-        setView((current) => ({ ...current, yaw: current.yaw + dx * 0.008, pitch: Math.max(-1.4, Math.min(1.4, current.pitch + dy * 0.008)) }));
+        setView((current) => ({ ...current, yaw: current.yaw - dx * 0.008, pitch: Math.max(-1.4, Math.min(1.4, current.pitch + dy * 0.008)) }));
       }}
       onPointerUp={() => { dragRef.current = null; }}
       onPointerCancel={() => { dragRef.current = null; }}

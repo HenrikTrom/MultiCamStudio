@@ -14,11 +14,11 @@ const calibrationStages = [
   { id: "validate", label: "Validate", script: "/home/docker/workspace/build/modules/MultiCamStudio/backend/scripts/validate.sh" },
 ] as const;
 const calibrationResult =
-  "/home/docker/workspace/workspace/multi-camera-calib/test/back_projeced3d.jpg";
+  "/home/docker/workspace/data/test/back_projeced3d.jpg";
 const calibrationGuide =
   "/home/docker/workspace/build/modules/MultiCamStudio/content/result.gif";
 const calibrationLogsDirectory =
-  "/home/docker/workspace/workspace/multi-camera-calib/data/logs";
+  "/home/docker/workspace/data/logs";
 const cameraStreamerExecutable = process.env.FLIR_STREAMER_EXECUTABLE ??
   "/home/docker/workspace/build/modules/MultiCamStudio/backend/build/fast_flir_web_streamer";
 const recorderExecutable = process.env.FLIR_RECORDER_EXECUTABLE ??

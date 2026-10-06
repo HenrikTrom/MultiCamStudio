@@ -8,7 +8,7 @@
   "master_serial": "20174578",
   "master_line": "Line3",
   "slave_line": "Line3",
-  "save_dir": "/home/docker/workspace/workspace/multi-camera-calib/data/videos",
+  "save_dir": "/home/docker/workspace/data/recordings",
   "codec": "hevc_nvenc",
   "cams": [
     {

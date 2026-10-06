@@ -135,7 +135,7 @@ RUN apt-get update --fix-missing && apt-get install --no-install-recommends -y \
     libncurses5-dev libgdbm-dev libglib2.0-0 libxext6 libsm6 \
     libxrender1 libffi-dev libusb-1.0-0-dev \
     qt5-default \
-    tree nano libeigen3-dev wget curl \
+    tree nano libeigen3-dev wget curl ffmpeg \
     libavdevice-dev \
     zlib1g unzip mlocate \
     sudo \

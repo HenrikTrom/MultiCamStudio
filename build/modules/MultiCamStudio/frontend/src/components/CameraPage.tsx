@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Columns2, Columns3, Focus as FocusIcon, Grid2X2, Maximize2, Play, RefreshCw, SlidersHorizontal, Square } from "lucide-react";
+import { Columns2, Columns3, Focus as FocusIcon, Grid2X2, Maximize2, Minimize2, Play, RefreshCw, SlidersHorizontal, Square } from "lucide-react";
 import { getCameraStreamStatus, loadCameras, makeLog, startCameraStream, stopCameraStream, type Camera, type LogEntry } from "../api/backend";
 import CameraStream, { type FocusPeakingSettings, type HistogramData } from "./CameraStream";
 import LogPanel from "./LogPanel";
@@ -40,9 +40,18 @@ function Histogram({ data }: { data: HistogramData }) {
 }
 
 function CameraTile({ camera, focus }: { camera: Camera; focus: FocusPeakingSettings }) {
+  const framePointer = useRef<{
+    id: number;
+    x: number;
+    y: number;
+    panX: number;
+    panY: number;
+  } | null>(null);
+  const dragged = useRef(false);
   const [failed, setFailed] = useState(false);
   const [status, setStatus] = useState("Connecting…");
   const [expanded, setExpanded] = useState(false);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
   const [histogram, setHistogram] = useState<HistogramData>(emptyHistogram);
   const handleStatus = useCallback((message: string, error = false) => {
     setStatus(message);
@@ -52,14 +61,71 @@ function CameraTile({ camera, focus }: { camera: Camera; focus: FocusPeakingSett
 
   useEffect(() => {
     if (!expanded) return;
-    const close = (event: KeyboardEvent) => { if (event.key === "Escape") setExpanded(false); };
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setExpanded(false);
+        setPan({ x: 0, y: 0 });
+      }
+    };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [expanded]);
 
+  const toggleExpanded = () => {
+    setExpanded((value) => !value);
+    setPan({ x: 0, y: 0 });
+  };
+
   return (
     <article className="camera-tile">
-      <div className={expanded ? "camera-frame expanded" : "camera-frame"} onClick={() => setExpanded((value) => !value)}>
+      <div
+        className={expanded ? "camera-frame expanded" : "camera-frame"}
+        role="button"
+        tabIndex={0}
+        aria-label={expanded ? `Drag to pan ${camera.name}; click or press Escape to close` : `Enlarge ${camera.name}`}
+        style={{ "--pan-x": `${pan.x}px`, "--pan-y": `${pan.y}px` } as React.CSSProperties}
+        onClick={() => {
+          if (dragged.current) {
+            dragged.current = false;
+            return;
+          }
+          toggleExpanded();
+        }}
+        onPointerDown={(event) => {
+          if (!expanded || event.button !== 0) return;
+          dragged.current = false;
+          framePointer.current = {
+            id: event.pointerId,
+            x: event.clientX,
+            y: event.clientY,
+            panX: pan.x,
+            panY: pan.y,
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const pointer = framePointer.current;
+          if (!pointer || pointer.id !== event.pointerId) return;
+          const deltaX = event.clientX - pointer.x;
+          const deltaY = event.clientY - pointer.y;
+          if (Math.abs(deltaX) + Math.abs(deltaY) > 2) dragged.current = true;
+          const bounds = event.currentTarget.getBoundingClientRect();
+          setPan({
+            x: Math.max(-bounds.width / 2, Math.min(bounds.width / 2, pointer.panX + deltaX)),
+            y: Math.max(-bounds.height / 2, Math.min(bounds.height / 2, pointer.panY + deltaY)),
+          });
+        }}
+        onPointerUp={(event) => {
+          if (framePointer.current?.id === event.pointerId) framePointer.current = null;
+        }}
+        onPointerCancel={() => { framePointer.current = null; }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            toggleExpanded();
+          }
+        }}
+      >
         <CameraStream camera={camera} focus={focus} onStatus={handleStatus} onHistogram={handleHistogram} />
         {failed && (
           <div className="signal-fallback">
@@ -69,7 +135,7 @@ function CameraTile({ camera, focus }: { camera: Camera; focus: FocusPeakingSett
           </div>
         )}
         <div className="stream-badge"><span /> LIVE</div>
-        <button type="button" className="icon-overlay" aria-label={expanded ? `Close ${camera.name}` : `Expand ${camera.name}`}><Maximize2 size={16} /></button>
+        <span className="icon-overlay" aria-hidden="true">{expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</span>
       </div>
       <div className="camera-histogram"><div><strong>Histogram</strong><span className="histogram-legend"><i className="luma" />Y<i className="red" />R<i className="green" />G<i className="blue" />B</span></div><Histogram data={histogram} /></div>
       <footer>

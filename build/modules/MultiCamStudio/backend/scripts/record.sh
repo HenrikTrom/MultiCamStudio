@@ -14,7 +14,7 @@ input_dir=$CALIBRATION_DATA/calib_videos
 output_dir=$CALIBRATION_DATA/calib_images
 
 # create backup of old calibration
-/usr/bin/python3 $mcs_dir/scripts/create_backup.py $CALIBRATION_DATA/logs
+/usr/bin/python3 $calib_dir/scripts/create_backup.py $CALIBRATION_DATA/logs
 
 # ----------------------------------------------------------------
 # Comment out if you have your own camera api/synchronized images
@@ -25,7 +25,7 @@ rm -rf $input_dir/*.mp4
 rm -rf $output_dir/*.png
 
 # change fps and output dir
-/usr/bin/python3 $calib_dir/scripts/overwrite_settings_calib.py $CAMERA_SETTINGS_FILE $calib_dir/cfg/adapted_settings.json
+/usr/bin/python3 $mcs_dir/backend/scripts/overwrite_settings_calib.py $CAMERA_SETTINGS_FILE $calib_dir/cfg/adapted_settings.json
 # record 30 frames
 /opt/modules/flirmulticamera/build/record_synchronized_videos $calib_dir/cfg/adapted_settings.json 30
 

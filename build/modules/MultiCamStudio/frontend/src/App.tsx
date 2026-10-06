@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Aperture, Camera, CircleDot, Radio, Settings } from "lucide-react";
+import { Aperture, Camera, CircleDot, Moon, Radio, Settings, Sun } from "lucide-react";
 import CameraPage from "./components/CameraPage";
 import CalibrationPage from "./components/CalibrationPage";
 import RecordPage from "./components/RecordPage";
@@ -18,6 +18,20 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("camera");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => {
+    try {
+      return window.localStorage.getItem("multicamstudio-theme") !== "light";
+    } catch {
+      return true;
+    }
+  });
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = darkMode ? "dark" : "light";
+    try {
+      window.localStorage.setItem("multicamstudio-theme", darkMode ? "dark" : "light");
+    } catch { /* theme still works for this session */ }
+  }, [darkMode]);
 
   useEffect(() => {
     let active = true;
@@ -33,7 +47,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="app-shell">
+    <div className={darkMode ? "app-shell theme-dark" : "app-shell"}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><Camera size={21} strokeWidth={1.8} /></div>
@@ -56,6 +70,17 @@ export default function App() {
         </nav>
 
         <button className="settings-button" onClick={() => setSettingsOpen(true)}><Settings size={17} /> Settings</button>
+        <button
+          className="settings-button theme-toggle"
+          type="button"
+          onClick={() => setDarkMode((enabled) => !enabled)}
+          aria-label={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+          aria-pressed={darkMode}
+          title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          {darkMode ? <Sun size={17} /> : <Moon size={17} />}
+          <span>{darkMode ? "Light mode" : "Dark mode"}</span>
+        </button>
       </aside>
 
       <main className="main-content">

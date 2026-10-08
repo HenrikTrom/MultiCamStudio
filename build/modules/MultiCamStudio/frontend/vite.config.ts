@@ -9,20 +9,20 @@ import { request as httpRequest, type IncomingMessage, type ServerResponse } fro
 import { dirname } from "node:path";
 
 const calibrationStages = [
-  { id: "capture", label: "Capture", script: "/home/docker/workspace/build/modules/MultiCamStudio/backend/scripts/record.sh" },
-  { id: "calibrate", label: "Calibrate", script: "/home/docker/workspace/build/modules/MultiCamStudio/backend/scripts/calibrate.sh" },
-  { id: "validate", label: "Validate", script: "/home/docker/workspace/build/modules/MultiCamStudio/backend/scripts/validate.sh" },
+  { id: "capture", label: "Capture", script: "/opt/modules/MultiCamStudio/backend/scripts/record.sh" },
+  { id: "calibrate", label: "Calibrate", script: "/opt/modules/MultiCamStudio/backend/scripts/calibrate.sh" },
+  { id: "validate", label: "Validate", script: "/opt/modules/MultiCamStudio/backend/scripts/validate.sh" },
 ] as const;
 const calibrationResult =
   "/home/docker/workspace/data/test/back_projeced3d.jpg";
 const calibrationGuide =
-  "/home/docker/workspace/build/modules/MultiCamStudio/content/result.gif";
+  "/opt/modules/MultiCamStudio/content/result.gif";
 const calibrationLogsDirectory =
   "/home/docker/workspace/data/logs";
 const cameraStreamerExecutable = process.env.FLIR_STREAMER_EXECUTABLE ??
-  "/home/docker/workspace/build/modules/MultiCamStudio/backend/build/fast_flir_web_streamer";
+  "/opt/modules/MultiCamStudio/backend/build/fast_flir_web_streamer";
 const recorderExecutable = process.env.FLIR_RECORDER_EXECUTABLE ??
-  "/home/docker/workspace/build/modules/MultiCamStudio/backend/build/flir_recorder";
+  "/opt/modules/MultiCamStudio/backend/build/flir_recorder";
 const cameraStreamerPort = 8080;
 let cameraStreamerProcess: ReturnType<typeof spawn> | null = null;
 let recorderProcess: ReturnType<typeof spawn> | null = null;

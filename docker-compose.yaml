@@ -1,48 +1,48 @@
-version: '3.8'
 services:
-  multicamstudio: 
+  multicamstudio:
+    image: my/${TAG1:?Set TAG1 in .env}_${CUDA_VERSION}
+    pull_policy: never
     build:
       context: ./build
-      # target: multicamstudio
       args:
         UBUNTU_IMAGE_VERSION: ${UBUNTU_IMAGE_VERSION}
         CUDA_VERSION: ${CUDA_VERSION}
         CUDA_ARCH_BIN: ${CUDA_ARCH_BIN}
         OPENCV_VERSION: ${OPENCV_VERSION}
-        UID: ${UID}
-        GID: ${GID}
         CMAKE_VERSION: ${CMAKE_VERSION}
         CPP_OPTIMIZATIONS: ${CPP_OPTIMIZATIONS}
         FLIR_CAMERA_COUNT: ${FLIR_CAMERA_COUNT}
-        FLIR_GID: ${FLIR_GID}
-    image: my/${TAG1}
-
+    group_add:
+      - "${FLIR_GID}"
     network_mode: host
-    # command: tail -f /dev/null
-    command: /home/docker/workspace/startup.sh
+    command: /opt/modules/MultiCamStudio/start.sh
     tty: true
+    stdin_open: true
     runtime: nvidia
-  
     environment:
-      DISPLAY: "${DISPLAY}"
+      HOST_UID: "${UID}"
+      HOST_GID: "${GID}"
+      PORT: "${PORT:-5173}"
+      DISPLAY: ${DISPLAY:-}
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: all
       TERM: xterm-256color
       DEBUG_COLORS: "true"
       COLORTERM: truecolor
+      HOME: /tmp
+      npm_config_cache: /tmp/npm-cache
       CAMERA_SETTINGS_FILE: ${CAMERA_SETTINGS_FILE}
       CAMERA_CALIBRATION_FILE: ${CAMERA_CALIBRATION_FILE}
       CALIBRATION_DATA: ${CALIBRATION_DATA}
-      # SSH_AUTH_SOCK: /ssh-agent # for github dev
-    volumes: 
+
+    volumes:
       - ./:/home/docker/workspace
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
-      # - $SSH_AUTH_SOCK:/ssh-agent  # Forward SSH socket
-
+      
     devices:
       - /dev/bus/usb:/dev/bus/usb
-    
+
     deploy:
       resources:
         reservations:

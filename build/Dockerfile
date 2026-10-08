@@ -60,8 +60,6 @@ ARG UBUNTU_IMAGE_VERSION
 ARG CUDA_VERSION
 ARG CUDA_ARCH_BIN
 ARG OPENCV_VERSION
-ARG UID
-ARG GID
 ARG CPP_OPTIMIZATIONS
 
 # Export args as environment variables
@@ -89,8 +87,6 @@ ARG UBUNTU_IMAGE_VERSION
 ARG CUDA_VERSION
 ARG CUDA_ARCH_BIN
 ARG OPENCV_VERSION
-ARG UID
-ARG GID
 ARG CPP_OPTIMIZATIONS
 ARG FLIR_CAMERA_COUNT
 # Export args as environment variables
@@ -219,7 +215,7 @@ RUN rm -rf build; mkdir build && chmod +x ./build_install.sh && ./build_install.
 WORKDIR /opt/modules/multi-camera-calib/scripts
 RUN chmod +x ./build.sh && ./build.sh
 ################################################################
-## Install NVM
+# Install NVM and Node.js
 ################################################################
 ENV NVM_DIR=/opt/nvm
 RUN mkdir -p "$NVM_DIR" \
@@ -234,6 +230,12 @@ RUN mkdir -p "$NVM_DIR" \
     && chmod -R a+rX "$NVM_DIR"
 
 ################################################################
+# Build MultiCamStudio
+################################################################
+WORKDIR /opt/modules/MultiCamStudio
+RUN chmod +x ./build_install.sh \
+    && ./build_install.sh
+################################################################
 ## System Fixes and Quality of Life Improvements
 ################################################################
 
@@ -247,23 +249,16 @@ RUN echo 'set completion-ignore-case On' >> /etc/inputrc
 ################################################################
 ## Final Setup: User Environment and Permissions
 ################################################################
-
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gosu && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 # Create non-root user with sudo permissions
 COPY ./setup/user.sh /tmp/user.sh
 RUN chmod +x /tmp/user.sh && /tmp/user.sh
-
-ARG FLIR_GID
-ENV FLIR_GID=${FLIR_GID}
-RUN groupadd -g $FLIR_GID flirimaging
-# add users to the flirimaging group
-RUN usermod -a -G flirimaging docker
 ################################################################
 ## Final Setup: User Environment and Permissions
 ################################################################
-
-# Create non-root user with sudo permissions
-COPY ./setup/user.sh /tmp/user.sh
-RUN chmod +x /tmp/user.sh && /tmp/user.sh
 
 # Set default workspace
 WORKDIR /home/docker/workspace
@@ -278,5 +273,12 @@ RUN rm -rf /usr/lib/x86_64-linux-gnu/cmake/opencv4/
 # Update file search database
 RUN updatedb
 
-# Switch to non-root user
-USER docker
+COPY ./setup/runtime_user.sh /usr/local/bin/runtime_user.sh
+
+RUN chmod +x /usr/local/bin/runtime_user.sh
+
+USER root
+
+ENTRYPOINT ["/opt/nvidia/nvidia_entrypoint.sh"]
+
+CMD ["/usr/local/bin/runtime_user.sh"]

@@ -1,5 +1,7 @@
 # MultiCamStudio
 
+![Overview](/content/output.gif)
+
 MultiCamStudio provides a browser interface for checking FLIR camera feeds, calibrating a multi-camera setup, and recording synchronized videos. It is intended for laboratory recording workflows, including behavioral research.
 
 Read the [installation and researcher instructions](instructions.md) for Spinnaker container setup, launching the GUI, camera checks, calibration, recording, and automatic startup with crontab.
@@ -15,11 +17,3 @@ When adding cameras, add a full entry to `cams`, add the same serial to calibrat
 Print the [calibration pattern](build/modules/multi-camera-calib/content/board_pattern.MCC_Patt1040x720.bmp) at **1040 × 720 mm including the border**, with **80 mm squares**, and glue it to a flat, stiff surface. We used a 10 cm “Pressholzplatte” (pressed-wood board). **A wobbly, bent, or flexible pattern deteriorates calibration accuracy.** See [board preparation instructions](instructions.md#create-the-calibration-board) for printing and mounting checks.
 
 Host command examples use `<path-to-MultiCamStudio>` as a placeholder for your checkout's absolute path. Replace it before running commands; the fixed paths inside the container remain as documented.
-
-## Overview video / GIF
-
-**Placeholder — a short overview video or GIF will be added here.**
-
-Planned walkthrough: open the GUI → check the cameras → calibrate → record a session → find the saved videos.
-
-<!-- Replace the placeholder above with a video link or an embedded GIF when available. -->

@@ -149,10 +149,11 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install numerical and visualization packages
-RUN pip3 install --no-cache-dir numpy==1.24.4 tqdm cairosvg
-RUN pip3 install --no-cache-dir opencv-contrib-python
-RUN pip3 install --no-cache-dir matplotlib pillow jsonpickle rich
+# Python scripts use NumPy, OpenCV (including ArUco), and Rich.
+# ArUco/ChArUco are in the main OpenCV package in 4.10; contrib is unnecessary.
+# Pin the headless wheel to match the native OpenCV version used by this repo.
+RUN python3 -m pip install --no-cache-dir \
+    numpy==1.24.4 opencv-python-headless==4.10.0.84 rich
 
 ################################################################
 ## X11 and debugging utilities
@@ -196,17 +197,12 @@ RUN rm -rf build; mkdir build && chmod +x ./build_install.sh && ./build_install.
 RUN apt-get update && apt-get install -y \
     pybind11-dev \
     python3-dev \
-    python3-pip \
     python3-setuptools \
-    python3-numpy \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 ################################################################
 # Install libflirmulticamera
 ################################################################
-RUN apt-get update && apt-get install -y npm --fix-missing \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
 COPY ./modules/flirmulticamera/ /opt/modules/flirmulticamera/
 WORKDIR /opt/modules/flirmulticamera
 RUN rm -rf build; mkdir build && chmod +x ./build_install.sh && ./build_install.sh

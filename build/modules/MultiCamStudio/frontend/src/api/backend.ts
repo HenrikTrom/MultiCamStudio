@@ -73,6 +73,28 @@ export type ProcessLogLine = {
   message: string;
 };
 
+export type RecorderMode = "camera" | "hrsoc";
+export type EyeTrackerStatus = {
+  trackers: Array<{ name: string; endpoint: string; connected: boolean; message: string }>;
+  refreshIntervalMs: number;
+  checkedAt: number;
+};
+
+export async function getEyeTrackerStatus(): Promise<EyeTrackerStatus> {
+  const response = await fetch("/local-api/eye-trackers/status", { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error ?? "Could not check eye trackers");
+  return payload as EyeTrackerStatus;
+}
+
+export async function getRecorderConfig() {
+  const response = await fetch("/local-api/recorder/config", { cache: "no-store" });
+  if (!response.ok) throw new Error("Could not load camera and save-directory settings");
+  return response.json() as Promise<{
+    saveDirectory: string; cameras: Array<{ serial: string }>; fps: number; width: number; height: number;
+  }>;
+}
+
 export async function getCameraStreamStatus(after = 0) {
   const response = await fetch(`/local-api/camera-stream/status?after=${after}`, { cache: "no-store" });
   if (!response.ok) throw new Error(`Camera stream status returned HTTP ${response.status}`);
@@ -84,23 +106,26 @@ export async function getRecorderStatus(after = 0) {
   if (!response.ok) throw new Error(`Recorder status returned HTTP ${response.status}`);
   return response.json() as Promise<{
     recording: boolean;
+    mode: RecorderMode | null;
+    ready: boolean;
+    session: { name: string; saveDirectory: string } | null;
     startedAt: number | null;
     logs: ProcessLogLine[];
   }>;
 }
 
-async function changeRecorder(action: "start" | "stop", name?: string) {
+async function changeRecorder(action: "start" | "stop", name?: string, saveDirectory?: string, mode: RecorderMode = "camera") {
   const response = await fetch(`/local-api/recorder/${action}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, saveDirectory, mode }),
   });
   const payload = await response.json() as { recording?: boolean; startedAt?: number | null; error?: string };
   if (!response.ok) throw new Error(payload.error ?? `Could not ${action} recorder`);
   return payload;
 }
 
-export const startRecorder = (name: string) => changeRecorder("start", name);
+export const startRecorder = (name: string, saveDirectory?: string, mode: RecorderMode = "camera") => changeRecorder("start", name, saveDirectory, mode);
 export const stopRecorder = () => changeRecorder("stop");
 
 export type CalibrationResult = {

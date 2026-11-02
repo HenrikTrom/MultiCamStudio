@@ -36,6 +36,7 @@ std::string default_config_path() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  spdlog::flush_on(spdlog::level::info);
   struct sigaction action {};
   action.sa_handler = request_stop;
   sigemptyset(&action.sa_mask);
@@ -47,6 +48,9 @@ int main(int argc, char** argv) {
     CameraSettings settings;
     spdlog::info("Loading camera settings from {}", config_file);
     load_camera_settings(config_file, settings);
+    if (const char* directory = std::getenv("RECORDING_SAVE_DIR"); directory && *directory) {
+      settings.save_dir = directory;
+    }
     if (settings.save_dir.empty()) {
 #ifdef CONFIG_DIR
       settings.save_dir = std::string(CONFIG_DIR) + "/../outputs";
@@ -64,7 +68,10 @@ int main(int argc, char** argv) {
             : "recording";
     const std::filesystem::path recording_directory =
         std::filesystem::path(settings.save_dir) / recording_name;
-    std::filesystem::create_directories(recording_directory);
+    std::filesystem::create_directories(recording_directory.parent_path());
+    if (!std::filesystem::create_directory(recording_directory)) {
+      throw std::runtime_error("Session directory already exists; choose another name");
+    }
     spdlog::info("Recording name: {}", recording_name);
     spdlog::info("Recording output directory: {}",
                  recording_directory.string());

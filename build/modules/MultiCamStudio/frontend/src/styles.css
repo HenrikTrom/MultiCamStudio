@@ -203,3 +203,10 @@ button { cursor: pointer; }
 	.sidebar > .settings-button.theme-toggle { margin: 8px auto 0; }
 	.theme-toggle span { display: none; }
 }
+.eye-tracker-panel { margin-top: 17px; }
+.recorder-note { color: #717872; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.theme-dark .recorder-note { color: var(--dark-muted); }
+.source-ready.offline { color: #ab3e36; background: #f9e9e6; }
+.theme-dark .source-ready.offline { color: #f1a49c; background: #422b2b; }
+.storage strong { overflow-wrap: anywhere; text-align: right; }
+.record-button:disabled,.stop-button:disabled { opacity: .6; cursor: default; }

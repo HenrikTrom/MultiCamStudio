@@ -10,7 +10,7 @@ verify the port
 curl -I http://localhost:5173
 
 convert to image:
-docker save my/multicamstudio:latest | gzip > multicamstudio.tar.gz
+docker save my/multicamstudio_12.8.0:latest | gzip > multicamstudio.tar.gz
 
 scp multicamstudio.tar.gz
 scp docker-compose.yaml

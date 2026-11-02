@@ -233,6 +233,8 @@ RUN mkdir -p "$NVM_DIR" \
 # Build MultiCamStudio
 ################################################################
 WORKDIR /opt/modules/MultiCamStudio
+RUN apt-get update && apt-get install -y --no-install-recommends libzmq3-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 RUN chmod +x ./build_install.sh \
     && ./build_install.sh
 ################################################################

@@ -3,6 +3,7 @@ project(fast_flir_web_streamer LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+include(CTest)
 
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -48,3 +49,6 @@ target_link_libraries(flir_recorder PRIVATE
 target_compile_options(flir_recorder PRIVATE
   -Wall -Wextra -Wpedantic
 )
+
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../flir-eye-tracker-record"
+                 "${CMAKE_CURRENT_BINARY_DIR}/flir-eye-tracker-record")

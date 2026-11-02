@@ -1,23 +1,25 @@
 import { useEffect, useState } from "react";
-import { Aperture, Camera, CircleDot, Moon, Radio, Settings, Sun } from "lucide-react";
+import { Aperture, Camera, CircleDot, Eye, Moon, Radio, Settings, Sun } from "lucide-react";
 import CameraPage from "./components/CameraPage";
 import CalibrationPage from "./components/CalibrationPage";
 import RecordPage from "./components/RecordPage";
 import SettingsModal from "./components/SettingsModal";
-import { getRecorderStatus } from "./api/backend";
+import { getRecorderStatus, type RecorderMode } from "./api/backend";
 
-type Tab = "camera" | "calibration" | "record";
+type Tab = "camera" | "calibration" | "record" | "hrsoc";
 
 const tabs = [
   { id: "camera" as const, label: "Camera Check", icon: Radio },
   { id: "calibration" as const, label: "Calibration", icon: Aperture },
   { id: "record" as const, label: "Record", icon: CircleDot },
+  { id: "hrsoc" as const, label: "HRSoc Recorder", icon: Eye },
 ];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("camera");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [recorderMode, setRecorderMode] = useState<RecorderMode | null>(null);
   const [darkMode, setDarkMode] = useState(() => {
     try {
       return window.localStorage.getItem("multicamstudio-theme") !== "light";
@@ -38,7 +40,7 @@ export default function App() {
     const poll = async () => {
       try {
         const status = await getRecorderStatus();
-        if (active) setRecording(status.recording);
+        if (active) { setRecording(status.recording); setRecorderMode(status.mode); }
       } catch { /* keep the last known recorder state */ }
     };
     void poll();
@@ -58,13 +60,13 @@ export default function App() {
           <span className="nav-heading">Workspace</span>
           {tabs.map(({ id, label, icon: Icon }) => (
             <button
-              className={`nav-item${activeTab === id ? " active" : ""}${id === "record" && recording ? " recording" : ""}`}
+              className={`nav-item${activeTab === id ? " active" : ""}${recording && (id === "hrsoc" && recorderMode === "hrsoc" || id === "record" && recorderMode === "camera") ? " recording" : ""}`}
               key={id}
               onClick={() => setActiveTab(id)}
             >
               <Icon size={18} strokeWidth={1.8} />
               <span>{label}</span>
-              {id === "record" && <span className={recording ? "nav-dot recording" : "nav-dot"} />}
+              {(id === "record" || id === "hrsoc") && <span className={recording && (id === "hrsoc" ? recorderMode === "hrsoc" : recorderMode === "camera") ? "nav-dot recording" : "nav-dot"} />}
             </button>
           ))}
         </nav>
@@ -86,7 +88,7 @@ export default function App() {
       <main className="main-content">
         {activeTab === "camera" && <CameraPage />}
         {activeTab === "calibration" && <CalibrationPage />}
-        {activeTab === "record" && <RecordPage recording={recording} onRecordingChange={setRecording} />}
+        {(activeTab === "record" || activeTab === "hrsoc") && <RecordPage key={activeTab} mode={activeTab === "hrsoc" ? "hrsoc" : "camera"} recording={recording} onRecordingChange={setRecording} />}
       </main>
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>

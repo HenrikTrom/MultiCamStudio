@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HRSoc eye tracker settings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["eye_trackers"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 5000, "default": 1000 },
+    "refresh_interval_ms": { "type": "integer", "minimum": 1000, "maximum": 60000, "default": 2000 },
+    "eye_trackers": {
+      "description": "One entry per eye tracker. Add/remove entries to change the number; [] records FLIR cameras only.",
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "ip", "port"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "ip": { "type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9.:-]+$" },
+          "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 50020 }
+        }
+      }
+    }
+  }
+}

@@ -23,17 +23,28 @@ const cameraStreamerExecutable = process.env.FLIR_STREAMER_EXECUTABLE ??
   "/opt/modules/MultiCamStudio/backend/build/fast_flir_web_streamer";
 const recorderExecutable = process.env.FLIR_RECORDER_EXECUTABLE ??
   "/opt/modules/MultiCamStudio/backend/build/flir_recorder";
+const eyeRecorderExecutable = process.env.FLIR_EYE_RECORDER_EXECUTABLE ??
+  "/opt/modules/MultiCamStudio/backend/build/flir-eye-tracker-record/flir_eye_tracker_recorder";
+const eyeTrackerSettingsFile = process.env.EYE_TRACKER_SETTINGS_FILE ??
+  "/home/docker/workspace/cfg/eye_tracker_settings.json";
+type RecorderMode = "camera" | "hrsoc";
 const cameraStreamerPort = 8080;
 let cameraStreamerProcess: ReturnType<typeof spawn> | null = null;
 let recorderProcess: ReturnType<typeof spawn> | null = null;
 let recorderStartedAt: number | null = null;
+let recorderMode: RecorderMode | null = null;
+let recorderStarting = false;
+let recorderReady = false;
+let recorderStopping: Promise<void> | null = null;
+let recorderSession: { name: string; saveDirectory: string } | null = null;
+let calibrationRunning = false;
 type ProcessLog = { id: number; stream: "stdout" | "stderr"; message: string };
 let nextProcessLogId = 1;
 let cameraStreamerLogs: ProcessLog[] = [];
 let recorderLogs: ProcessLog[] = [];
 const settingsDocuments = {
   camera: {
-    file: "/home/docker/workspace/cfg/camera_settings_1024x768.json",
+    file: process.env.CAMERA_SETTINGS_FILE ?? "/home/docker/workspace/cfg/camera_settings_1024x768.json",
     schema: "/opt/modules/flirmulticamera/cfg/CameraSettings.Schema.json",
   },
   calibration: {
@@ -137,10 +148,11 @@ function callCameraStreamer(path: string, method: "GET" | "POST", timeout = 500)
 }
 
 async function startCameraStreamer() {
-  if (recorderProcess && recorderProcess.exitCode === null) {
+  if (recorderStarting || recorderProcess || calibrationRunning) {
     throw new Error("Stop the recorder before starting the camera streamer");
   }
   if (await callCameraStreamer("/api/health", "GET")) return;
+  if (recorderStarting || recorderProcess || calibrationRunning) throw new Error("Cameras are in use");
   if (cameraStreamerProcess && cameraStreamerProcess.exitCode === null) return;
 
   const child = spawn(cameraStreamerExecutable, [], {
@@ -165,43 +177,122 @@ async function startCameraStreamer() {
   throw new Error("Camera streamer did not become ready within 10 seconds");
 }
 
-async function startRecorder(recordingName: string) {
-  if (recorderProcess && recorderProcess.exitCode === null) return;
-  await stopCameraStreamer();
-  recorderLogs = [];
-  appendProcessLog(recorderLogs, "stdout", `Starting ${recorderExecutable}`);
-  const child = spawn(recorderExecutable, [], {
-    cwd: dirname(recorderExecutable),
-    env: { ...process.env, RECORDING_NAME: recordingName },
-  });
-  recorderProcess = child;
-  recorderStartedAt = Date.now();
-  captureProcessOutput(child, recorderLogs, "recorder");
-  child.once("close", (exitCode, signal) => {
-    appendProcessLog(
-      recorderLogs,
-      exitCode === 0 ? "stdout" : "stderr",
-      signal ? `Recorder stopped by signal ${signal}` : `Recorder exited with code ${exitCode ?? "unknown"}`,
-    );
-    if (recorderProcess === child) recorderProcess = null;
+async function startRecorder(recordingName: string, saveDirectory: string, mode: RecorderMode) {
+  if (recorderStarting || recorderProcess || calibrationRunning) throw new Error("Cameras are already in use by a recorder or calibration");
+  recorderStarting = true;
+  recorderMode = mode;
+  recorderSession = { name: recordingName, saveDirectory };
+  try {
+    if (!saveDirectory) {
+      const settings = JSON.parse(await readFile(settingsDocuments.camera.file, "utf8")) as { save_dir?: string };
+      saveDirectory = settings.save_dir?.trim() ?? "";
+    }
+    if (!saveDirectory) throw new Error("Choose a save directory");
+    recorderSession = { name: recordingName, saveDirectory };
+    await stopCameraStreamer();
+    recorderLogs = [];
+    const executable = mode === "hrsoc" ? eyeRecorderExecutable : recorderExecutable;
+    appendProcessLog(recorderLogs, "stdout", `Starting ${executable}`);
+    const child = spawn(executable, [], {
+      cwd: dirname(executable),
+      env: { ...process.env, CAMERA_SETTINGS_FILE: settingsDocuments.camera.file,
+        EYE_TRACKER_SETTINGS_FILE: eyeTrackerSettingsFile,
+        RECORDING_NAME: recordingName, RECORDING_SAVE_DIR: saveDirectory },
+    });
+    recorderProcess = child;
+    recorderMode = mode;
+    recorderReady = false;
     recorderStartedAt = null;
-  });
-  await new Promise<void>((resolve, reject) => {
-    child.once("spawn", resolve);
-    child.once("error", reject);
-  });
+    captureProcessOutput(child, recorderLogs, "recorder");
+    let startupOutput = "";
+    let announcedReady = false;
+    child.stdout?.on("data", (chunk: Buffer) => {
+      startupOutput = (startupOutput + chunk.toString()).slice(-4000);
+      if (!announcedReady && startupOutput.includes("Synchronized recording started")) {
+        announcedReady = true;
+        recorderReady = true;
+        recorderStartedAt = Date.now();
+      }
+    });
+    child.once("close", (exitCode, signal) => {
+      appendProcessLog(
+        recorderLogs,
+        exitCode === 0 ? "stdout" : "stderr",
+        signal ? `Recorder stopped by signal ${signal}` : `Recorder exited with code ${exitCode ?? "unknown"}`,
+      );
+      if (recorderProcess === child) {
+        recorderProcess = null;
+        recorderStartedAt = null;
+        recorderReady = false;
+      }
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+    for (let attempt = 0; attempt < 300; ++attempt) {
+      if (recorderProcess !== child) throw new Error("Recorder exited during startup. See recorder output.");
+      if (recorderReady) return;
+      await delay(100);
+    }
+    await stopRecorder();
+    throw new Error("Recorder did not become ready within 30 seconds. See recorder output.");
+  } finally {
+    recorderStarting = false;
+  }
 }
 
 async function stopRecorder() {
+  if (recorderStopping) return recorderStopping;
   const child = recorderProcess;
-  if (!child || child.exitCode !== null) return;
-  appendProcessLog(recorderLogs, "stdout", "Stopping recorder");
-  child.kill("SIGINT");
-  await Promise.race([
-    new Promise<void>((resolve) => child.once("close", () => resolve())),
-    delay(5000),
-  ]);
-  if (child.exitCode === null) child.kill("SIGTERM");
+  if (!child) return;
+  recorderStopping = (async () => {
+    recorderReady = false;
+    appendProcessLog(recorderLogs, "stdout", "Stopping recorder");
+    child.kill("SIGINT");
+    await new Promise<void>((resolve) => {
+      const finish = () => { clearTimeout(timeout); child.off("close", finish); resolve(); };
+      const timeout = setTimeout(finish, 20000);
+      child.once("close", finish);
+    });
+    if (recorderProcess === child) throw new Error("Recorder is still finalizing videos and timestamps. Wait and try stopping again.");
+  })();
+  try { await recorderStopping; } finally { recorderStopping = null; }
+}
+
+type EyeStatus = {
+  trackers: Array<{ name: string; endpoint: string; connected: boolean; message: string }>;
+  refreshIntervalMs: number;
+  checkedAt: number;
+};
+let eyeStatus: EyeStatus | null = null;
+let eyeStatusProbe: Promise<EyeStatus> | null = null;
+let eyeStatusSettings = "";
+
+async function getEyeStatus(): Promise<EyeStatus> {
+  const contents = await readFile(eyeTrackerSettingsFile, "utf8");
+  if (eyeStatus && eyeStatusSettings === contents && Date.now() - eyeStatus.checkedAt < eyeStatus.refreshIntervalMs) return eyeStatus;
+  if (eyeStatusProbe) return eyeStatusProbe;
+  eyeStatusProbe = new Promise<EyeStatus>((resolve, reject) => {
+    const child = spawn(eyeRecorderExecutable, ["--status", eyeTrackerSettingsFile], { env: process.env });
+    let output = "";
+    let errors = "";
+    const timeout = setTimeout(() => { child.kill("SIGTERM"); reject(new Error("Eye tracker status check timed out")); }, 12000);
+    child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { errors += chunk.toString(); });
+    child.once("error", (error) => { clearTimeout(timeout); reject(error); });
+    child.once("close", (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) { reject(new Error(errors.trim() || "Eye tracker status check failed")); return; }
+      try {
+        const status = { ...JSON.parse(output), checkedAt: Date.now() } as EyeStatus;
+        eyeStatus = status;
+        eyeStatusSettings = contents;
+        resolve(status);
+      } catch { reject(new Error("Invalid eye tracker status response")); }
+    });
+  });
+  try { return await eyeStatusProbe; } finally { eyeStatusProbe = null; }
 }
 
 async function stopCameraStreamer() {
@@ -234,6 +325,20 @@ function localCalibrationApi(): Plugin {
         const requestPath = parsedRequest.pathname;
         const afterLogId = Number(parsedRequest.searchParams.get("after") ?? 0);
 
+        if (requestPath === "/local-api/eye-trackers/status" && request.method === "GET") {
+          void getEyeStatus().then((status) => sendJson(response, 200, status))
+            .catch((error: unknown) => sendJson(response, 500, { error: error instanceof Error ? error.message : "Could not check eye trackers" }));
+          return;
+        }
+
+        if (requestPath === "/local-api/recorder/config" && request.method === "GET") {
+          void readFile(settingsDocuments.camera.file, "utf8").then((contents) => {
+            const settings = JSON.parse(contents) as { save_dir: string; cams: Array<{ serial: string }>; fps: number; img_width: number; img_height: number };
+            sendJson(response, 200, { saveDirectory: settings.save_dir, cameras: settings.cams, fps: settings.fps, width: settings.img_width, height: settings.img_height });
+          }).catch((error: unknown) => sendJson(response, 500, { error: error instanceof Error ? error.message : "Could not load recorder configuration" }));
+          return;
+        }
+
         if (requestPath === "/local-api/camera-stream/status" && request.method === "GET") {
           void callCameraStreamer("/api/health", "GET").then((streaming) => {
             sendJson(response, 200, {
@@ -246,7 +351,10 @@ function localCalibrationApi(): Plugin {
 
         if (requestPath === "/local-api/recorder/status" && request.method === "GET") {
           sendJson(response, 200, {
-            recording: Boolean(recorderProcess && recorderProcess.exitCode === null),
+            recording: Boolean(recorderProcess || recorderStarting),
+            mode: recorderMode,
+            ready: recorderReady,
+            session: recorderSession,
             startedAt: recorderStartedAt,
             logs: recorderLogs.filter((entry) => entry.id > afterLogId),
           });
@@ -255,12 +363,16 @@ function localCalibrationApi(): Plugin {
 
         if (requestPath === "/local-api/recorder/start" && request.method === "POST") {
           void readRequestJson(request).then((payload) => {
-            const requestedName = payload && typeof payload === "object" && !Array.isArray(payload)
-              ? String((payload as Record<string, unknown>).name ?? "recording")
-              : "recording";
-            const recordingName = requestedName.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120) || "recording";
-            return startRecorder(recordingName);
-          }).then(() => sendJson(response, 200, { recording: true, startedAt: recorderStartedAt }))
+            if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Recorder settings must be an object");
+            const candidate = payload as Record<string, unknown>;
+            const name = candidate.name;
+            if (typeof name !== "string" || !/^[A-Za-z0-9_.-]{1,120}$/.test(name) || name === "." || name === "..")
+              throw new Error("Choose a session name using letters, numbers, underscores, dots or hyphens");
+            if (candidate.mode !== undefined && candidate.mode !== "camera" && candidate.mode !== "hrsoc") throw new Error("Unknown recorder mode");
+            const saveDirectory = candidate.saveDirectory;
+            if (saveDirectory !== undefined && (typeof saveDirectory !== "string" || saveDirectory.includes("\0"))) throw new Error("Invalid save directory");
+            return startRecorder(name, typeof saveDirectory === "string" ? saveDirectory.trim() : "", candidate.mode === "hrsoc" ? "hrsoc" : "camera");
+          }).then(() => sendJson(response, 200, { recording: Boolean(recorderProcess), startedAt: recorderStartedAt }))
             .catch((error: unknown) => sendJson(response, 500, {
               error: error instanceof Error ? error.message : "Could not start recorder",
             }));
@@ -360,6 +472,11 @@ function localCalibrationApi(): Plugin {
         if (request.method === "POST" &&
             (requestPath === "/local-api/calibration/run" ||
              requestPath === "/local-api/calibration/validate")) {
+          if (calibrationRunning || recorderStarting) {
+            sendJson(response, 409, { error: "Wait for the active capture operation to finish" });
+            return;
+          }
+          calibrationRunning = true;
           response.statusCode = 200;
           response.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
           response.setHeader("Cache-Control", "no-store");
@@ -377,6 +494,7 @@ function localCalibrationApi(): Plugin {
           const complete = (success: boolean, exitCode: number | null) => {
             if (finished) return;
             finished = true;
+            calibrationRunning = false;
             stat(calibrationResult, (error, file) => {
               send({
                 type: "complete",
@@ -454,6 +572,9 @@ function localCalibrationApi(): Plugin {
           void stopRecorder().then(stopCameraStreamer).then(() => {
             send({ type: "log", stream: "stdout", message: "Camera streamer stopped" });
             runStage(requestPath === "/local-api/calibration/validate" ? 2 : 0);
+          }).catch((error: unknown) => {
+            send({ type: "log", stream: "stderr", message: error instanceof Error ? error.message : "Could not release cameras" });
+            complete(false, null);
           });
           return;
         }

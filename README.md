@@ -6,6 +6,12 @@ MultiCamStudio provides a browser interface for checking FLIR camera feeds, cali
 
 Read the [installation and researcher instructions](instructions.md) for Spinnaker container setup, launching the GUI, camera checks, calibration, recording, and automatic startup with crontab.
 
+The **HRSoc Recorder** tab adds Pupil eye tracker control, automatically refreshed
+connection status, and per-frame timestamp JSON alongside synchronized FLIR
+videos. Configure tracker addresses in [eye tracker settings](cfg/eye_tracker_settings.json).
+See [eye tracker setup and recording](build/modules/flir-eye-tracker-record/README.md)
+for addresses, tracker count, output format and build instructions.
+
 ## Important: adapt the camera configuration
 
 Before use, edit [camera settings](cfg/camera_settings_1024x768.json) and [camera calibration settings](cfg/CameraCalibrationSettings.json) for your hardware. Use the actual camera serial numbers in both files. Set `master_serial` to the camera sending the synchronization signal through the trigger cable, and set `master_line` and `slave_line` to match the connected output and input lines. `main_cam_serial` selects the calibration's reference frame and can differ from the trigger master.

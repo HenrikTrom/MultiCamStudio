@@ -8,6 +8,8 @@
     "$schema": { "type": "string" },
     "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 5000, "default": 1000 },
     "refresh_interval_ms": { "type": "integer", "minimum": 1000, "maximum": 60000, "default": 2000 },
+    "clock_measurement_interval_ms": { "type": "integer", "minimum": 1000, "maximum": 60000, "default": 5000 },
+    "clock_measurement_samples": { "type": "integer", "minimum": 3, "maximum": 60, "default": 10 },
     "eye_trackers": {
       "description": "One entry per eye tracker. Add/remove entries to change the number; [] records FLIR cameras only.",
       "type": "array",

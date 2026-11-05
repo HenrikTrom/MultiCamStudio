@@ -1,6 +1,7 @@
 #pragma once
 
 #include <rapidjson/document.h>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -14,11 +15,30 @@ struct EyeTrackerSettings {
   std::vector<EyeTracker> trackers;
   int timeout_ms = 1000;
   int refresh_interval_ms = 2000;
+  int clock_measurement_interval_ms = 5000;
+  int clock_measurement_samples = 10;
 };
 
 struct Reply {
   bool connected = false;
   std::string message;
+  std::int64_t host_before_ns = 0;
+  std::int64_t host_after_ns = 0;
+};
+
+// Own a socket on one thread. Reuse it for a burst; reconnect after errors.
+class PupilRemote {
+ public:
+  PupilRemote(EyeTracker tracker, int timeout_ms);
+  ~PupilRemote();
+  PupilRemote(const PupilRemote&) = delete;
+  PupilRemote& operator=(const PupilRemote&) = delete;
+  Reply request(const std::string& command);
+ private:
+  EyeTracker tracker_;
+  int timeout_ms_;
+  void* context_ = nullptr;
+  void* socket_ = nullptr;
 };
 
 rapidjson::Document load_json(const std::string& path);

@@ -595,7 +595,7 @@ function localCalibrationApi(): Plugin {
           return;
         }
 
-        if (request.method === "GET" && requestPath === "/local-api/calibration/latest-json") {
+        if ((request.method === "GET" || request.method === "HEAD") && requestPath === "/local-api/calibration/latest-json") {
           void (async () => {
             try {
               const entries = await readdir(calibrationLogsDirectory, { withFileTypes: true });
@@ -610,10 +610,11 @@ function localCalibrationApi(): Plugin {
                 sendJson(response, 404, { error: "No calibration JSON file was found" });
                 return;
               }
-              const contents = await readFile(latest.path, "utf8");
+              const contents = request.method === "HEAD" ? undefined : await readFile(latest.path, "utf8");
               response.statusCode = 200;
               response.setHeader("Content-Type", "application/json; charset=utf-8");
               response.setHeader("Cache-Control", "no-store");
+              response.setHeader("Last-Modified", new Date(latest.modified).toUTCString());
               response.end(contents);
             } catch (error) {
               const message = error instanceof Error ? error.message : "Could not read calibration JSON";

@@ -2,6 +2,8 @@
   "$schema": "../build/modules/flir-eye-tracker-record/eye_tracker_settings.scheme.json",
   "timeout_ms": 1000,
   "refresh_interval_ms": 2000,
+  "clock_measurement_interval_ms": 5000,
+  "clock_measurement_samples": 10,
   "eye_trackers": [
     { "name": "Eye tracker 1", "ip": "134.76.92.34", "port": 50020 },
     { "name": "Eye tracker 2", "ip": "134.76.92.37", "port": 50020 }

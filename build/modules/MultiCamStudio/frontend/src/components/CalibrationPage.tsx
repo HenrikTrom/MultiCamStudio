@@ -16,6 +16,12 @@ const initialStageStates: Record<CalibrationStage, CalibrationStageState> = {
   validate: "pending",
 };
 
+function calibrationModifiedAt(response: Response): Date | null {
+  const value = response.headers.get("Last-Modified");
+  const date = value ? new Date(value) : null;
+  return date && Number.isFinite(date.getTime()) ? date : null;
+}
+
 export default function CalibrationPage() {
   const [busy, setBusy] = useState(false);
   const [validated, setValidated] = useState(false);
@@ -24,6 +30,7 @@ export default function CalibrationPage() {
   const [resultVersion, setResultVersion] = useState(0);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [show3DView, setShow3DView] = useState(false);
+  const [calibrationModified, setCalibrationModified] = useState<Date | null>(null);
   const [stageStates, setStageStates] = useState(initialStageStates);
   const [logs, setLogs] = useState<LogEntry[]>([
     makeLog(1, "Calibration workspace ready"),
@@ -43,6 +50,21 @@ export default function CalibrationPage() {
     }).catch(() => undefined);
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    if (busy) return;
+    const controller = new AbortController();
+    void fetch(latestCalibrationJsonUrl, {
+      method: "HEAD",
+      cache: "no-store",
+      signal: controller.signal,
+    }).then((response) => {
+      setCalibrationModified(response.ok ? calibrationModifiedAt(response) : null);
+    }).catch(() => {
+      if (!controller.signal.aborted) setCalibrationModified(null);
+    });
+    return () => controller.abort();
+  }, [busy, show3DView]);
 
   const run = async () => {
     let nextLogId = Date.now();
@@ -81,6 +103,7 @@ export default function CalibrationPage() {
     try {
       const response = await fetch(latestCalibrationJsonUrl);
       if (!response.ok) throw new Error(`Calibration JSON request failed with HTTP ${response.status}`);
+      setCalibrationModified(calibrationModifiedAt(response));
       await navigator.clipboard.writeText(await response.text());
       setCopyStatus("copied");
     } catch {
@@ -153,7 +176,20 @@ export default function CalibrationPage() {
         </section>
         <section className="surface preview-card">
           <div className="preview-title-row">
-            <div className="section-title"><div className="title-icon"><Image size={19} /></div><div><h2>Validation preview</h2></div></div>
+            <div className="section-title">
+              <div className="title-icon"><Image size={19} /></div>
+              <div>
+                <h2>Validation preview</h2>
+                {calibrationModified && (
+                  <time className="calibration-file-timestamp" dateTime={calibrationModified.toISOString()} title="Latest calibration file modification time">
+                    Updated {calibrationModified.toLocaleString(undefined, {
+                      year: "numeric", month: "short", day: "numeric",
+                      hour: "2-digit", minute: "2-digit", second: "2-digit",
+                    })}
+                  </time>
+                )}
+              </div>
+            </div>
             <div className="preview-actions">
               <button className="secondary-button" type="button" onClick={() => setShow3DView(true)}><Box size={14} />3D view</button>
               <button className="secondary-button copy-calibration" type="button" onClick={copyCalibration}>

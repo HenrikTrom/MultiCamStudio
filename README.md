@@ -8,7 +8,8 @@ Read the [installation and researcher instructions](instructions.md) for Spinnak
 
 The **HRSoc Recorder** tab adds Pupil eye tracker control, automatically refreshed
 connection status, and per-frame timestamp JSON alongside synchronized FLIR
-videos. Configure tracker addresses in [eye tracker settings](cfg/eye_tracker_settings.json).
+videos. It also logs periodic Pupil clock measurements for alignment with FLIR
+timestamps, including a CSV conversion helper. Configure tracker addresses in [eye tracker settings](cfg/eye_tracker_settings.json).
 See [eye tracker setup and recording](build/modules/flir-eye-tracker-record/README.md)
 for addresses, tracker count, output format and build instructions.
 

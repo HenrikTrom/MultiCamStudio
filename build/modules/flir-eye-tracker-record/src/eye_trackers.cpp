@@ -8,9 +8,9 @@
 #include <fstream>
 #include <future>
 #include <iostream>
-#include <memory>
 #include <set>
 #include <stdexcept>
+#include <time.h>
 
 namespace hrsoc {
 rapidjson::Document load_json(const std::string& path) {
@@ -44,6 +44,8 @@ EyeTrackerSettings load_eye_tracker_settings(const std::string& path) {
   };
   settings.timeout_ms = integer("timeout_ms", 1000, 100, 5000);
   settings.refresh_interval_ms = integer("refresh_interval_ms", 2000, 1000, 60000);
+  settings.clock_measurement_interval_ms = integer("clock_measurement_interval_ms", 5000, 1000, 60000);
+  settings.clock_measurement_samples = integer("clock_measurement_samples", 10, 3, 60);
   if (!document.HasMember("eye_trackers") || !document["eye_trackers"].IsArray())
     throw std::runtime_error("eye_trackers must be an array");
   if (document["eye_trackers"].Size() > 32)
@@ -68,30 +70,64 @@ EyeTrackerSettings load_eye_tracker_settings(const std::string& path) {
   return settings;
 }
 
-Reply request(const EyeTracker& tracker, const std::string& command, int timeout_ms) {
-  // A fresh REQ socket on each request also recovers after a receive timeout.
-  std::unique_ptr<void, decltype(&zmq_ctx_term)> context(zmq_ctx_new(), zmq_ctx_term);
-  if (!context) return {false, "Cannot create ZeroMQ context"};
-  std::unique_ptr<void, decltype(&zmq_close)> socket(zmq_socket(context.get(), ZMQ_REQ), zmq_close);
-  if (!socket) return {false, "Cannot create ZeroMQ socket"};
-  const int linger = 0;
-  zmq_setsockopt(socket.get(), ZMQ_LINGER, &linger, sizeof(linger));
-  zmq_setsockopt(socket.get(), ZMQ_SNDTIMEO, &timeout_ms, sizeof(timeout_ms));
-  zmq_setsockopt(socket.get(), ZMQ_RCVTIMEO, &timeout_ms, sizeof(timeout_ms));
-  if (zmq_connect(socket.get(), tracker.endpoint.c_str()) != 0 ||
-      zmq_send(socket.get(), command.data(), command.size(), 0) < 0)
-    return {false, std::string("Request failed: ") + zmq_strerror(zmq_errno())};
+namespace {
+std::int64_t monotonic_ns() {
+  timespec now{};
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    throw std::runtime_error("Cannot read CLOCK_MONOTONIC");
+  return static_cast<std::int64_t>(now.tv_sec) * 1000000000LL + now.tv_nsec;
+}
+}
+
+PupilRemote::PupilRemote(EyeTracker tracker, int timeout_ms)
+    : tracker_(std::move(tracker)), timeout_ms_(timeout_ms), context_(zmq_ctx_new()) {}
+
+PupilRemote::~PupilRemote() {
+  if (socket_) zmq_close(socket_);
+  if (context_) zmq_ctx_term(context_);
+}
+
+Reply PupilRemote::request(const std::string& command) {
+  if (!context_) return {false, "Cannot create ZeroMQ context"};
+  const auto failed = [&](const std::string& message, std::int64_t before = 0) {
+    if (socket_) zmq_close(socket_);
+    socket_ = nullptr;
+    return Reply{false, message, before, before ? monotonic_ns() : 0};
+  };
+  if (!socket_) {
+    socket_ = zmq_socket(context_, ZMQ_REQ);
+    if (!socket_) return {false, "Cannot create ZeroMQ socket"};
+    const int linger = 0;
+    if (zmq_setsockopt(socket_, ZMQ_LINGER, &linger, sizeof(linger)) != 0 ||
+        zmq_setsockopt(socket_, ZMQ_SNDTIMEO, &timeout_ms_, sizeof(timeout_ms_)) != 0 ||
+        zmq_setsockopt(socket_, ZMQ_RCVTIMEO, &timeout_ms_, sizeof(timeout_ms_)) != 0 ||
+        zmq_connect(socket_, tracker_.endpoint.c_str()) != 0)
+      return failed(std::string("Request failed: ") + zmq_strerror(zmq_errno()));
+  }
+  const auto before = monotonic_ns();
+  if (zmq_send(socket_, command.data(), command.size(), 0) < 0)
+    return failed(std::string("Request failed: ") + zmq_strerror(zmq_errno()), before);
   zmq_msg_t message;
   zmq_msg_init(&message);
-  const int received = zmq_msg_recv(&message, socket.get(), 0);
+  const int received = zmq_msg_recv(&message, socket_, 0);
   const int error = zmq_errno();
+  const auto after = monotonic_ns();
   std::string reply;
   if (received >= 0)
     reply.assign(static_cast<const char*>(zmq_msg_data(&message)), zmq_msg_size(&message));
   zmq_msg_close(&message);
-  if (received < 0) return {false, std::string("No reply: ") + zmq_strerror(error)};
-  if (reply.empty()) return {false, "Empty reply"};
-  return {true, reply};
+  if (received < 0) {
+    auto result = failed(std::string("No reply: ") + zmq_strerror(error), before);
+    result.host_after_ns = after;
+    return result;
+  }
+  if (reply.empty()) return {false, "Empty reply", before, after};
+  return {true, reply, before, after};
+}
+
+Reply request(const EyeTracker& tracker, const std::string& command, int timeout_ms) {
+  PupilRemote remote(tracker, timeout_ms);
+  return remote.request(command);
 }
 
 std::vector<Reply> probe(const EyeTrackerSettings& settings) {

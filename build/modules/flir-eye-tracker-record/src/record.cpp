@@ -1,5 +1,6 @@
 #include "eye_trackers.h"
 #include "timestamp_log.h"
+#include "clock_measurements.h"
 #include <flirmulticamera/FlirCamera.h>
 #include <flirmulticamera/videoIO.h>
 #include <spdlog/spdlog.h>
@@ -96,6 +97,7 @@ int main(int argc, char** argv) {
     fs::copy_file(argc > 2 ? argv[2] : eye_path, directory / "eye_tracker_settings.json");
     hrsoc::TimestampLog timestamps(directory / "frame_timestamps.json");
     hrsoc::EyeTrackerRecording eye_recording(eyes);
+    hrsoc::ClockMeasurements clock_measurements(eyes, directory / "clock_measurements.jsonl");
     FlirCameraHandler cameras(settings);
     if (!cameras.Configure()) throw std::runtime_error("Could not configure FlirCameraHandler");
     VideoWriter writer{static_cast<std::uint32_t>(settings.width),
@@ -107,6 +109,8 @@ int main(int argc, char** argv) {
     writer.Open(filenames);
     capture.opened = true;
     if (!running) return 0;
+    clock_measurements.start();
+    if (!running) return 0;
     eye_recording.start(name);
     if (!running) return 0;
     cameras.Start();
@@ -115,6 +119,7 @@ int main(int argc, char** argv) {
     std::uint64_t frame_count = 0;
     auto last_frame = std::chrono::steady_clock::now();
     while (running) {
+      clock_measurements.check();
       if (!cameras.Get(frames)) {
         if (std::chrono::steady_clock::now() - last_frame > std::chrono::seconds(10))
           throw std::runtime_error("No synchronized FLIR frames received for 10 seconds");
@@ -137,7 +142,9 @@ int main(int argc, char** argv) {
       ++frame_count;
       if (frame_count == 1 || frame_count % 100 == 0) spdlog::info("Recorded {} synchronized frames", frame_count);
     }
+    cameras.Stop();
     const bool eyes_stopped = eye_recording.stop();
+    clock_measurements.stop();
     if (!timestamps.close()) throw std::runtime_error("Could not finalize frame_timestamps.json");
     spdlog::info("Recording stopped after {} synchronized frames", frame_count);
     return eyes_stopped ? 0 : 1;

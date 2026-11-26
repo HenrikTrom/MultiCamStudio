@@ -1,282 +1,146 @@
-ARG UBUNTU_IMAGE_VERSION
-ARG CUDA_VERSION=12.3
+# MCS GUI and ROS 2 image previews are built once, then launched without compilation.
+ARG ROS_DISTRO=jazzy
+FROM node:22-bookworm-slim AS node-base
+FROM node-base AS frontend-builder
+WORKDIR /build/web
+COPY build/modules/MultiCamStudio/frontend/package*.json ./
+RUN npm ci --no-audit --no-fund
+COPY build/modules/MultiCamStudio/frontend/ ./
+RUN npm run build
 
-FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_IMAGE_VERSION} AS opencv-builder
-
-LABEL maintainer="Henrik Trommer <henrik.trommer@uni-goettingen.de>"
-
-SHELL ["/bin/bash","-c"]
-
-# Set system timezone to UTC, Install GPG and certificate tools for adding external repositories
-RUN echo 'Etc/UTC' > /etc/timezone \
-    && ln -s /usr/share/zoneinfo/Etc/UTC /etc/localtime \
-    && apt-get update \
-    && apt-get install -q -y --no-install-recommends \
-    tzdata \
-    dirmngr \
-    gnupg2 \
-    && apt-get clean \
+FROM ros:${ROS_DISTRO}-ros-base-noble AS runtime-base
+ARG ROS_DISTRO
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+SHELL ["/bin/bash", "-c"]
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      libavcodec60 libavformat60 libavutil58 libswscale7 libspdlog1.12 \
+      ros-${ROS_DISTRO}-sensor-msgs ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+      curl \
     && rm -rf /var/lib/apt/lists/*
 
-################################################################
-# Essential build tools and dependencies
-################################################################
+# Shared Python/codec runtime; changes to application code do not rerun pip.
+FROM runtime-base AS python-runtime
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv libpng16-16t64 libjpeg-turbo8 \
+    && python3 -m venv --system-site-packages /opt/mcs/python \
+    && /opt/mcs/python/bin/pip install --no-cache-dir numpy==1.26.4 opencv-python-headless==4.10.0.84 \
+    && rm -rf /var/lib/apt/lists/*
+ENV LD_LIBRARY_PATH=/opt/mcs/opencv/lib CALIBRATION_DATA=/home/docker/workspace/data
 
-# Install build tools and software properties
-RUN apt-get update --fix-missing && apt-get install --no-install-recommends -y \
-    software-properties-common \
-    build-essential \
-    wget git bzip2 ca-certificates zlib1g-dev \
-    libncurses5-dev libgdbm-dev libglib2.0-0 libxext6 libsm6 \
-    libxrender1 libffi-dev libusb-1.0-0-dev \
-    tree nano libeigen3-dev wget curl \
-    libavdevice-dev \
-    zlib1g unzip mlocate \
-    sudo \
-    && apt-get clean \
+# Native calibration needs OpenCV >= 4.7, including the legacy ArUco headers.
+FROM runtime-base AS opencv-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake ca-certificates libpng-dev libjpeg-dev \
+    && rm -rf /var/lib/apt/lists/*
+ARG OPENCV_VERSION=4.10.0
+RUN curl -fL --retry 3 https://codeload.github.com/opencv/opencv/tar.gz/refs/tags/${OPENCV_VERSION} -o /tmp/opencv.tar.gz \
+    && curl -fL --retry 3 https://codeload.github.com/opencv/opencv_contrib/tar.gz/refs/tags/${OPENCV_VERSION} -o /tmp/contrib.tar.gz \
+    && tar -xf /tmp/opencv.tar.gz -C /tmp && tar -xf /tmp/contrib.tar.gz -C /tmp \
+    && cmake -S /tmp/opencv-${OPENCV_VERSION} -B /tmp/opencv-build \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/mcs/opencv \
+      -DOPENCV_EXTRA_MODULES_PATH=/tmp/opencv_contrib-${OPENCV_VERSION}/modules \
+      -DBUILD_LIST=core,imgproc,imgcodecs,videoio,calib3d,features2d,flann,objdetect,aruco \
+      -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_opencv_apps=OFF \
+      -DBUILD_JAVA=OFF -DBUILD_opencv_python3=OFF -DWITH_IPP=OFF -DWITH_ITT=OFF \
+      -DWITH_OPENCL=OFF -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_GTK=OFF -DWITH_QT=OFF \
+      -DWITH_TIFF=OFF -DWITH_WEBP=OFF -DWITH_OPENEXR=OFF -DWITH_OPENJPEG=OFF \
+      -DWITH_LAPACK=OFF -DWITH_EIGEN=OFF -DCPU_DISPATCH= \
+    && cmake --build /tmp/opencv-build -j4 && cmake --install /tmp/opencv-build
+
+# Optional workspace for iterative colcon builds. Never used at normal startup.
+FROM python-runtime AS devel-base
+COPY --from=opencv-builder /opt/mcs/opencv/ /opt/mcs/opencv/
+ENV CMAKE_PREFIX_PATH=/opt/mcs/opencv LD_LIBRARY_PATH=/opt/mcs/opencv/lib
+COPY --from=node-base /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-base /usr/local/lib/node_modules/npm/ /usr/local/lib/node_modules/npm/
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      build-essential cmake pkg-config python3-colcon-common-extensions \
+      libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+      libspdlog-dev nlohmann-json3-dev rapidjson-dev ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+ENV HOME=/tmp ROS_LOG_DIR=/tmp/mcs-ros-logs FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+WORKDIR /workspaces/ros2_ws
+CMD ["bash"]
+
+FROM devel-base AS calibration-builder
+COPY build/modules/cpp_utils/ /tmp/cpp_utils/
+RUN cmake -S /tmp/cpp_utils -B /tmp/cpp-utils-build -DCMAKE_INSTALL_PREFIX=/opt/mcs/calibration/deps \
+    && cmake --build /tmp/cpp-utils-build -j4 && cmake --install /tmp/cpp-utils-build
+COPY build/modules/multi-camera-calib/ /opt/mcs/calibration/source/
+RUN cmake -S /opt/mcs/calibration/source -B /tmp/calibration-build \
+      -DCMAKE_PREFIX_PATH="/opt/mcs/opencv;/opt/mcs/calibration/deps" \
+    && cmake --build /tmp/calibration-build -j2 \
+    && install -D /tmp/calibration-build/Multi_Camera_Calibration /opt/mcs/calibration/bin/Multi_Camera_Calibration
+# Full development environment includes the unmodified calibration binary.
+FROM calibration-builder AS build-tools
+WORKDIR /workspaces/ros2_ws
+CMD ["bash"]
+
+FROM build-tools AS builder
+COPY ros2_ws/src/ros2_multicam_interface/CMakeLists.txt ros2_ws/src/ros2_multicam_interface/package.xml src/ros2_multicam_interface/
+COPY ros2_ws/src/ros2_multicam_interface/src/ src/ros2_multicam_interface/src/
+COPY ros2_ws/src/ros2_multicam_interface/include/ src/ros2_multicam_interface/include/
+RUN mkdir -p src/ros2_multicam_interface/scripts \
+    && source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && colcon build --merge-install --install-base /opt/mcs/ros2 \
+         --packages-select ros2_multicam_interface \
+         --cmake-args -DCMAKE_BUILD_TYPE=Release
+COPY ros2_ws/src/ros2_multicam_interface/scripts/ /opt/mcs/ros2/lib/ros2_multicam_interface/
+
+# Development is opt-in. It has source, compilers, npm, incremental ROS builds,
+# and Vite; normal startup never executes this entrypoint.
+FROM builder AS devel
+COPY --from=frontend-builder /build/web/ /workspaces/mcs-web/
+COPY ros2_ws/src/ros2_multicam_interface/scripts/ /workspaces/ros2_ws/src/ros2_multicam_interface/scripts/
+COPY --chmod=755 build/ros2/devel-entrypoint.sh /mcs-devel-entrypoint.sh
+RUN chown -R 1000:1000 /workspaces
+USER 1000:1000
+ENV PORT=5173 MCS_API_PORT=5175 STREAMER_PORT=8080
+WORKDIR /workspaces/mcs-web
+EXPOSE 5173
+HEALTHCHECK --interval=10s --timeout=3s --start-period=120s --retries=3 \
+    CMD curl --fail --silent "http://127.0.0.1:${MCS_API_PORT}/healthz" || exit 1
+ENTRYPOINT ["/mcs-devel-entrypoint.sh"]
+CMD []
+
+# The deployed image starts with ROS core, not the compiler-equipped ROS base.
+FROM ros:${ROS_DISTRO}-ros-core-noble AS production-base
+ARG ROS_DISTRO
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+SHELL ["/bin/bash", "-c"]
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      libavcodec60 libavformat60 libavutil58 libswscale7 libspdlog1.12 \
+      libpng16-16t64 libjpeg-turbo8 python3-numpy \
+      ros-${ROS_DISTRO}-rclcpp ros-${ROS_DISTRO}-rclpy ros-${ROS_DISTRO}-sensor-msgs \
+      ros-${ROS_DISTRO}-rmw-fastrtps-cpp ros-${ROS_DISTRO}-rmw-cyclonedds-cpp curl \
     && rm -rf /var/lib/apt/lists/*
 
-################################################################
-## CMake Installation (custom version)
-################################################################
-
-ARG CMAKE_VERSION
-ENV CMAKE_VERSION=${CMAKE_VERSION}
-
-# Install custom version of CMake
-RUN apt-get update && apt-get install -y ca-certificates \
-    && wget https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.sh \
-    && mkdir /opt/cmake \
-    && sh cmake-${CMAKE_VERSION}-linux-x86_64.sh --skip-license --prefix=/opt/cmake \
-    && ln -s /opt/cmake/bin/cmake /usr/local/bin/cmake \
-    && rm cmake-${CMAKE_VERSION}-linux-x86_64.sh
-
-################################################################
-## Vision Dependencies Installation
-################################################################
-
-# Re-declare args as they're not preserved after `FROM`
-ARG UBUNTU_IMAGE_VERSION
-ARG CUDA_VERSION
-ARG CUDA_ARCH_BIN
-ARG OPENCV_VERSION
-ARG CPP_OPTIMIZATIONS
-
-# Export args as environment variables
-ENV UBUNTU_IMAGE_VERSION=${UBUNTU_IMAGE_VERSION}
-ENV CUDA_VERSION=${CUDA_VERSION}
-ENV CUDA_ARCH_BIN=${CUDA_ARCH_BIN}
-ENV OPENCV_VERSION=${OPENCV_VERSION}
-ENV CPP_OPTIMIZATIONS=${CPP_OPTIMIZATIONS}
-
-
-RUN mkdir /opt/vision_dependencies
-################################################################
-# OpenCV Installation
-################################################################
-# Keep application and other dependency changes out of the OpenCV cache key.
-COPY ./vision_dependencies/opencv/install.sh /opt/vision_dependencies/opencv/install.sh
-
-# Install OpenCV (custom build)
-WORKDIR /opt/vision_dependencies/opencv/
-RUN chmod +x install.sh && ./install.sh
-
-FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_IMAGE_VERSION} AS multicamstudio
-
-ARG UBUNTU_IMAGE_VERSION
-ARG CUDA_VERSION
-ARG CUDA_ARCH_BIN
-ARG OPENCV_VERSION
-ARG CPP_OPTIMIZATIONS
-ARG FLIR_CAMERA_COUNT
-# Export args as environment variables
-ENV UBUNTU_IMAGE_VERSION=${UBUNTU_IMAGE_VERSION}
-ENV CUDA_VERSION=${CUDA_VERSION}
-ENV CUDA_ARCH_BIN=${CUDA_ARCH_BIN}
-ENV OPENCV_VERSION=${OPENCV_VERSION}
-ENV CPP_OPTIMIZATIONS=${CPP_OPTIMIZATIONS}
-ENV FLIR_CAMERA_COUNT=${FLIR_CAMERA_COUNT}
-
-LABEL maintainer="Henrik Trommer <henrik.trommer@uni-goettingen.de>"
-
-COPY --from=opencv-builder /usr/local /usr/local
-COPY --from=opencv-builder /opt/cmake /opt/cmake
-
-# Fail here if the builder did not produce a usable OpenCV installation.
-RUN test -s /usr/local/lib/cmake/opencv4/OpenCVConfig.cmake && ldconfig
-
-SHELL ["/bin/bash","-c"]
-
-# Set system timezone to UTC, Install GPG and certificate tools for adding external repositories
-RUN echo 'Etc/UTC' > /etc/timezone \
-    && ln -s /usr/share/zoneinfo/Etc/UTC /etc/localtime \
-    && apt-get update \
-    && apt-get install -q -y --no-install-recommends \
-    tzdata \
-    dirmngr \
-    gnupg2 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-################################################################
-# Essential build tools and dependencies
-################################################################
-
-# Install build tools and software properties
-RUN apt-get update --fix-missing && apt-get install --no-install-recommends -y \
-    software-properties-common \
-    build-essential \
-    rapidjson-dev libspdlog-dev libfmt-dev \
-    wget git bzip2 ca-certificates zlib1g-dev \
-    libncurses5-dev libgdbm-dev libglib2.0-0 libxext6 libsm6 \
-    libxrender1 libffi-dev libusb-1.0-0-dev \
-    qt5-default \
-    tree nano libeigen3-dev wget curl ffmpeg \
-    libavdevice-dev \
-    zlib1g unzip mlocate \
-    sudo \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-################################################################
-## Python Environment Setup
-################################################################
-
-# Install Python and pip
-RUN apt-get update && apt-get install --no-install-recommends -y \
-    python3 \
-    python3-pip \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# Python scripts use NumPy, OpenCV (including ArUco), and Rich.
-# ArUco/ChArUco are in the main OpenCV package in 4.10; contrib is unnecessary.
-# Pin the headless wheel to match the native OpenCV version used by this repo.
-RUN python3 -m pip install --no-cache-dir \
-    numpy==1.24.4 opencv-python-headless==4.10.0.84 rich
-
-################################################################
-## X11 and debugging utilities
-################################################################
-
-# Enable X11 forwarding and archive tools
-RUN apt-get update -y && apt-get install -y \
-    x11-apps xauth zip \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-################################################################
-## CMake (custom version)
-################################################################
-
-ARG CMAKE_VERSION
-ENV CMAKE_VERSION=${CMAKE_VERSION}
-
-## Install: Spinnaker
-################################################################
-
-RUN mkdir /opt/spinnaker
-COPY ./spinnaker/ /opt/spinnaker/
-WORKDIR /opt/spinnaker
-ENV DEBIAN_FRONTEND="noninteractive"
-ENV DEBIAN_FRONTEND="teletype"
-RUN chmod +x ./install_spinnaker_auto.sh
-RUN chmod +x ./install_spinnaker.sh && ./install_spinnaker.sh
-
-################################################################
-# Install Modules
-################################################################
-
-RUN mkdir /opt/modules
-COPY ./modules/ /opt/modules/
-WORKDIR /opt/modules/cpp_utils
-RUN rm -rf build; mkdir build && chmod +x ./build_install.sh && ./build_install.sh
-################################################################
-# Extra packages
-################################################################
-RUN apt-get update && apt-get install -y \
-    pybind11-dev \
-    python3-dev \
-    python3-setuptools \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-################################################################
-# Install libflirmulticamera
-################################################################
-COPY ./modules/flirmulticamera/ /opt/modules/flirmulticamera/
-WORKDIR /opt/modules/flirmulticamera
-RUN rm -rf build; mkdir build && chmod +x ./build_install.sh && ./build_install.sh
-## Build: multi-camera-calib
-################################################################
-WORKDIR /opt/modules/multi-camera-calib/scripts
-RUN chmod +x ./build.sh && ./build.sh
-################################################################
-# Install NVM and Node.js
-################################################################
-ENV NVM_DIR=/opt/nvm
-RUN mkdir -p "$NVM_DIR" \
-    && curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash \
-    && . "$NVM_DIR/nvm.sh" \
-    && nvm install 20 \
-    && nvm use 20 \
-    && nvm alias default 20 \
-    && ln -sf "$(which node)" /usr/local/bin/node \
-    && ln -sf "$(which npm)" /usr/local/bin/npm \
-    && ln -sf "$(which npx)" /usr/local/bin/npx \
-    && chmod -R a+rX "$NVM_DIR"
-
-################################################################
-# Build MultiCamStudio
-################################################################
-WORKDIR /opt/modules/MultiCamStudio
-RUN apt-get update && apt-get install -y --no-install-recommends libzmq3-dev \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-RUN chmod +x ./build_install.sh \
-    && ./build_install.sh
-################################################################
-## System Fixes and Quality of Life Improvements
-################################################################
-
-# Workaround for broken apt-get cache cleanup in some base images
-RUN rm /etc/apt/apt.conf.d/docker-clean &&\
-    apt-get update
-
-# Enable case-insensitive tab completion
-RUN echo 'set completion-ignore-case On' >> /etc/inputrc
-
-################################################################
-## Final Setup: User Environment and Permissions
-################################################################
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends gosu && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-# Create non-root user with sudo permissions
-COPY ./setup/user.sh /tmp/user.sh
-RUN chmod +x /tmp/user.sh && /tmp/user.sh
-################################################################
-## Final Setup: User Environment and Permissions
-################################################################
-
-# Set default workspace
-WORKDIR /home/docker/workspace
-
-# Add custom shell configuration
-COPY .bashrc /home/docker/.bashrc
-
-# Remove potentially conflicting OpenCV libraries from system
-RUN rm -rf /usr/lib/x86_64-linux-gnu/libopencv*
-RUN rm -rf /usr/lib/x86_64-linux-gnu/cmake/opencv4/
-
-# Update file search database
-RUN updatedb
-
-COPY ./setup/runtime_user.sh /usr/local/bin/runtime_user.sh
-
-RUN chmod +x /usr/local/bin/runtime_user.sh
-
-USER root
-
-ENTRYPOINT ["/opt/nvidia/nvidia_entrypoint.sh"]
-
-CMD ["/usr/local/bin/runtime_user.sh"]
+FROM production-base AS runtime
+COPY --from=python-runtime /opt/mcs/python/ /opt/mcs/python/
+ENV LD_LIBRARY_PATH=/opt/mcs/opencv/lib CALIBRATION_DATA=/home/docker/workspace/data
+COPY --from=frontend-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=frontend-builder /build/web/dist/ /opt/mcs/web/dist/
+COPY build/modules/MultiCamStudio/frontend/server/ /opt/mcs/web/server/
+COPY --from=builder /opt/mcs/ros2/ /opt/mcs/ros2/
+COPY --from=builder /opt/mcs/calibration/bin/ /opt/mcs/calibration/bin/
+COPY --from=builder /opt/mcs/calibration/source/cfg/ /opt/mcs/calibration/source/cfg/
+COPY --from=opencv-builder /opt/mcs/opencv/ /opt/mcs/opencv/
+COPY build/modules/MultiCamStudio/content/result.gif /opt/mcs/web/calibration-guide.gif
+COPY cfg/CameraCalibrationSettings.json /home/docker/workspace/cfg/CameraCalibrationSettings.json
+COPY --chmod=755 build/ros2/entrypoint.sh /mcs-entrypoint.sh
+COPY --chmod=755 build/ros2/check-runtime.sh /usr/local/bin/mcs-check-runtime
+ENV HOME=/tmp ROS_LOG_DIR=/tmp/mcs-ros-logs FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
+    PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
+    CAMERA_CALIBRATION_FILE=/home/docker/workspace/cfg/CameraCalibrationSettings.json \
+    ROS_IMAGE_TOPIC_TEMPLATE=/grasshopper/camera_{serial}/image_raw \
+    PORT=5173 STREAMER_PORT=8080 STREAMER_ENCODER=libx264 STREAMER_BITRATE_MBIT=4
+# Preview and recording processes run as the host user with a writable data mount.
+USER 1000:1000
+WORKDIR /tmp
+RUN /usr/local/bin/mcs-check-runtime
+EXPOSE 5173
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl --fail --silent "http://127.0.0.1:${PORT}/healthz" || exit 1
+ENTRYPOINT ["/mcs-entrypoint.sh"]
+CMD ["node", "/opt/mcs/web/server/server.mjs"]

@@ -7,6 +7,15 @@ export type Camera = {
   codec: string;
   width: number;
   height: number;
+  topic: string;
+  online: boolean;
+  ready: boolean;
+  previewActive: boolean;
+  inputFps: number;
+  streamFps: number;
+  publisherCount: number;
+  error: string;
+  imageError: string;
 };
 
 export type LogEntry = {
@@ -16,44 +25,28 @@ export type LogEntry = {
   message: string;
 };
 
-const recordings = ["19037266", "19246521", "19338645", "19421325", "20174578"];
-
-export const cameras: Camera[] = recordings.map((id, index) => ({
-  id,
-  name: `Camera ${String(index + 1).padStart(2, "0")}`,
-  source: `/api/cameras/${index}/stream`,
-  resolution: "1024 × 768",
-  fps: 20,
-  codec: "avc1.64002A",
-  width: 1024,
-  height: 768,
-}));
-
 type CameraResponse = {
   cameras: Array<{
-    id: string;
-    name: string;
-    stream: string;
-    codec: string;
-    width: number;
-    height: number;
-    fps: number;
+    id: string; name: string; stream: string; codec: string;
+    width: number; height: number; fps: number; topic: string;
+    online: boolean; ready: boolean; preview_active: boolean;
+    input_fps: number; stream_fps: number; publisher_count: number;
+    error: string; image_error: string;
   }>;
 };
 
 export async function loadCameras(): Promise<Camera[]> {
-  const response = await fetch("/api/cameras");
+  const response = await fetch("/api/cameras", { cache: "no-store" });
   if (!response.ok) throw new Error(`Camera service returned HTTP ${response.status}`);
   const payload = (await response.json()) as CameraResponse;
   return payload.cameras.map((camera) => ({
-    id: camera.id,
-    name: camera.name,
-    source: camera.stream,
-    resolution: `${camera.width} × ${camera.height}`,
-    fps: camera.fps,
-    codec: camera.codec,
-    width: camera.width,
-    height: camera.height,
+    id: camera.id, name: camera.name, source: camera.stream, codec: camera.codec,
+    resolution: camera.width ? `${camera.width} × ${camera.height}` : "Waiting for image",
+    fps: camera.fps, width: camera.width, height: camera.height,
+    topic: camera.topic, online: camera.online, ready: camera.ready,
+    previewActive: camera.preview_active, inputFps: camera.input_fps,
+    streamFps: camera.stream_fps, publisherCount: camera.publisher_count,
+    error: camera.error, imageError: camera.image_error,
   }));
 }
 
@@ -91,7 +84,8 @@ export async function getRecorderConfig() {
   const response = await fetch("/local-api/recorder/config", { cache: "no-store" });
   if (!response.ok) throw new Error("Could not load camera and save-directory settings");
   return response.json() as Promise<{
-    saveDirectory: string; cameras: Array<{ serial: string }>; fps: number; width: number; height: number;
+    saveDirectory: string; cameras: Array<{ serial: string; topic: string; online: boolean; width: number; height: number; inputFps: number }>;
+    fps: number; width: number; height: number; syncToleranceMs: number;
   }>;
 }
 
@@ -108,24 +102,27 @@ export async function getRecorderStatus(after = 0) {
     recording: boolean;
     mode: RecorderMode | null;
     ready: boolean;
-    session: { name: string; saveDirectory: string } | null;
+    session: { name: string; saveDirectory: string; outputDirectory: string } | null;
     startedAt: number | null;
+    error: string;
+    calibrationRunning: boolean;
+    progress: { frames: number; width: number; height: number; status: string; dropped_frames: number[]; max_skew_ns?: number } | null;
     logs: ProcessLogLine[];
   }>;
 }
 
-async function changeRecorder(action: "start" | "stop", name?: string, saveDirectory?: string, mode: RecorderMode = "camera") {
+async function changeRecorder(action: "start" | "stop", name?: string, saveDirectory?: string, mode: RecorderMode = "camera", fps?: number) {
   const response = await fetch(`/local-api/recorder/${action}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, saveDirectory, mode }),
+    body: JSON.stringify({ name, saveDirectory, mode, fps }),
   });
   const payload = await response.json() as { recording?: boolean; startedAt?: number | null; error?: string };
   if (!response.ok) throw new Error(payload.error ?? `Could not ${action} recorder`);
   return payload;
 }
 
-export const startRecorder = (name: string, saveDirectory?: string, mode: RecorderMode = "camera") => changeRecorder("start", name, saveDirectory, mode);
+export const startRecorder = (name: string, saveDirectory?: string, mode: RecorderMode = "camera", fps?: number) => changeRecorder("start", name, saveDirectory, mode, fps);
 export const stopRecorder = () => changeRecorder("stop");
 
 export type CalibrationResult = {
@@ -148,34 +145,19 @@ async function runCalibrationProcess(
   onStage: (stage: CalibrationStage, state: CalibrationStageState) => void,
 ): Promise<CalibrationResult> {
   const response = await fetch(endpoint, { method: "POST" });
-  if (!response.ok || !response.body) {
-    throw new Error(`Calibration service returned HTTP ${response.status}`);
+  if (!response.ok) {
+    const value = await response.json();
+    throw new Error(value.error ?? "Could not start calibration");
   }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let pending = "";
-  let result: CalibrationResult | undefined;
-
-  const handleLine = (line: string) => {
-    if (!line.trim()) return;
-    const event = JSON.parse(line) as CalibrationStreamEvent;
-    if (event.type === "log") onLog(event.message, event.stream);
-    else if (event.type === "stage") onStage(event.stage, event.state);
-    else result = event;
-  };
-
+  let after = 0;
   while (true) {
-    const { done, value } = await reader.read();
-    pending += decoder.decode(value, { stream: !done });
-    const lines = pending.split("\n");
-    pending = lines.pop() ?? "";
-    lines.forEach(handleLine);
-    if (done) break;
+    const state = await getCalibrationStatus(after);
+    state.logs.forEach((entry) => { onLog(entry.message, entry.stream); after = entry.id; });
+    (Object.entries(state.stages) as Array<[CalibrationStage, CalibrationStageState]>).forEach(([stage, status]) => onStage(stage, status));
+    if (!state.running && state.result) return { success: state.result.success,
+      resultAvailable: state.result.resultAvailable, exitCode: state.result.success ? 0 : 1 };
+    await new Promise((done) => window.setTimeout(done, 500));
   }
-  if (pending) handleLine(pending);
-  if (!result) throw new Error("Calibration process ended without a completion status");
-  return result;
 }
 
 export function runCalibration(
@@ -237,3 +219,24 @@ export const makeLog = (
   message: string,
   level: LogEntry["level"] = "info",
 ): LogEntry => ({ id, message, level, time: now() });
+
+export type CalibrationStatus = {
+  running: boolean;
+  stages: Record<CalibrationStage, CalibrationStageState>;
+  sessionDirectory: string | null;
+  captureProgress?: { frames: number; target_frames: number };
+  result: { success: boolean; error: string; resultAvailable: boolean; finishedAt?: number;
+    report?: { mean_reprojection_error_px: number; max_reprojection_error_px: number; points: number } } | null;
+  logs: ProcessLogLine[];
+};
+export async function getCalibrationStatus(after = 0): Promise<CalibrationStatus> {
+  const response = await fetch(`/local-api/calibration/status?after=${after}`, { cache: "no-store" });
+  if (!response.ok) throw new Error("Calibration service unavailable");
+  return response.json();
+}
+export async function calibrationCommand(action: "run" | "validate" | "cancel") {
+  const response = await fetch(`/local-api/calibration/${action}`, { method: "POST" });
+  const value = await response.json();
+  if (!response.ok) throw new Error(value.error ?? "Calibration command failed");
+  return value;
+}

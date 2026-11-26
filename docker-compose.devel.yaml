@@ -1,0 +1,13 @@
+# Development only: docker compose -f docker-compose.yaml -f docker-compose.devel.yaml up -d --build
+services:
+  multicamstudio:
+    image: mcs-ros2-devel:${ROS_DISTRO:-jazzy}
+    build:
+      target: devel
+    environment:
+      MCS_API_PORT: ${MCS_API_PORT:-5175}
+    working_dir: /workspaces/mcs-web
+    volumes:
+      - ./ros2_ws:/workspaces/ros2_ws
+      - ./build/modules/MultiCamStudio/frontend:/workspaces/mcs-web
+    restart: "no"

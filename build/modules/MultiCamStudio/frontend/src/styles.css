@@ -215,3 +215,31 @@ button { cursor: pointer; }
 .theme-dark .source-ready.offline { color: #f1a49c; background: #422b2b; }
 .storage strong { overflow-wrap: anywhere; text-align: right; }
 .record-button:disabled,.stop-button:disabled { opacity: .6; cursor: default; }
+
+/* ROS topic activity is separate from preview-process health. */
+.topic-details { border-top: 1px solid #dfe2dc; padding: 10px 13px; }
+.topic-details code { display: block; overflow-wrap: anywhere; font-size: 10px; color: #65736b; }
+.topic-details > div { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 8px; font-size: 11px; color: #65736b; }
+.topic-details strong { color: #244435; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stream-explanation { color: #747d77; font-size: 12px; line-height: 1.6; }
+.stream-badge.offline span { background: #9da39e; }
+.service-error { padding: 12px; border: 1px solid #b96055; border-radius: 8px; color: #a33d30; }
+.pending-feature { padding: 24px; margin-bottom: 24px; }
+.connection-settings { display: grid; grid-template-columns: auto 1fr; gap: 14px 20px; }
+.connection-settings dt { font-weight: 600; }
+.connection-settings dd { margin: 0; overflow-wrap: anywhere; }
+.theme-dark .topic-details { border-color: var(--dark-border); }
+.theme-dark .topic-details code, .theme-dark .topic-details > div, .theme-dark .stream-explanation { color: var(--dark-muted); }
+.theme-dark .topic-details strong { color: #d8e4db; }
+.theme-dark .service-error { color: #f1aaa1; }
+@media (max-width: 700px) {
+  .page-header { flex-wrap: wrap; gap: 16px; }
+  .header-status { display: flex; border-left: 0; padding-left: 0; }
+  .connection-settings { grid-template-columns: 1fr; gap: 7px; }
+}
+
+.brand span { font-size: 9px; letter-spacing: .7px; }
+.source-check.offline { background: #555b60; }
+.calibration-result-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.recorder-note code { overflow-wrap: anywhere; }
+.form-stack input[type=number] { width: 100%; }

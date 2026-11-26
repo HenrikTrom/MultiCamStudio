@@ -39,7 +39,8 @@ function Histogram({ data }: { data: HistogramData }) {
   return <canvas ref={canvasRef} width={512} height={72} aria-label="256-bin RGB and luminance histogram" />;
 }
 
-function CameraTile({ camera, focus }: { camera: Camera; focus: FocusPeakingSettings }) {
+function CameraTile({ camera, focus, streaming }: { camera: Camera; focus: FocusPeakingSettings; streaming: boolean }) {
+  const enabled = streaming && camera.online && camera.ready && !camera.error && !camera.imageError;
   const framePointer = useRef<{
     id: number;
     x: number;
@@ -76,8 +77,14 @@ function CameraTile({ camera, focus }: { camera: Camera; focus: FocusPeakingSett
     setPan({ x: 0, y: 0 });
   };
 
+  const problem = camera.error || camera.imageError;
+  const visibleStatus = !streaming ? "Preview stopped" : problem || (!camera.online ?
+    camera.publisherCount ? "Waiting for images" : "Topic offline" : !camera.ready ? "Preparing preview…" : status);
+  const live = enabled && camera.previewActive && !failed;
+  const hz = (value: number) => `${value.toFixed(1)} Hz`;
+
   return (
-    <article className="camera-tile">
+    <article className="camera-tile" data-camera-id={camera.id}>
       <div
         className={expanded ? "camera-frame expanded" : "camera-frame"}
         role="button"
@@ -126,22 +133,28 @@ function CameraTile({ camera, focus }: { camera: Camera; focus: FocusPeakingSett
           }
         }}
       >
-        <CameraStream camera={camera} focus={focus} onStatus={handleStatus} onHistogram={handleHistogram} />
-        {failed && (
+        <CameraStream enabled={enabled} camera={camera} focus={focus} onStatus={handleStatus} onHistogram={handleHistogram} />
+        {(!enabled || failed) && (
           <div className="signal-fallback">
             <RefreshCw size={25} />
-            <span>{status}</span>
-            <small>Check the streamer on port 8080</small>
+            <span>{visibleStatus}</span>
+            <small>{camera.topic}</small>
           </div>
         )}
-        <div className="stream-badge"><span /> LIVE</div>
+        <div className={live ? "stream-badge" : "stream-badge offline"}><span />{live ? "LIVE" : camera.online && streaming ? "ONLINE" : "OFFLINE"}</div>
         <span className="icon-overlay" aria-hidden="true">{expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</span>
       </div>
       <div className="camera-histogram"><div><strong>Histogram</strong><span className="histogram-legend"><i className="luma" />Y<i className="red" />R<i className="green" />G<i className="blue" />B</span></div><Histogram data={histogram} /></div>
       <footer>
-        <div><strong>{camera.name}</strong><span>{camera.id} · {status}</span></div>
-        <div className="camera-meta"><span>{camera.resolution}</span><span>{camera.fps} FPS</span></div>
+        <div><strong>{camera.name}</strong><span>{camera.id} · {visibleStatus}</span></div>
+        <div className="camera-meta"><span>{camera.resolution}</span></div>
       </footer>
+      <div className="topic-details">
+        <code title={camera.topic}>{camera.topic}</code>
+        <div><span>Input <strong>{hz(camera.inputFps)}</strong></span>
+          <span>Preview <strong>{hz(camera.streamFps)}</strong></span>
+          <span>{camera.publisherCount} publisher{camera.publisherCount === 1 ? "" : "s"}</span></div>
+      </div>
     </article>
   );
 }
@@ -153,6 +166,8 @@ export default function CameraPage() {
   const [streamBusy, setStreamBusy] = useState(false);
   const [streamGeneration, setStreamGeneration] = useState(0);
   const lastStreamerLogId = useRef(0);
+  const wasStreaming = useRef(false);
+  const [serviceError, setServiceError] = useState("");
   const [focus, setFocus] = useState<FocusPeakingSettings>({
     enabled: true,
     threshold: 0.14,
@@ -173,37 +188,38 @@ export default function CameraPage() {
   ], []);
 
   useEffect(() => {
-    void loadCameras()
-      .then((discovered) => {
-        setStreamCameras(discovered);
-        setStreaming(true);
-        setLogs((value) => [...value, makeLog(Date.now(), `${discovered.length} camera streams discovered`, "success")]);
-      })
-      .catch((error: unknown) => {
-        setStreaming(false);
-        const message = error instanceof Error ? error.message : "Unknown camera-service error";
-        setLogs((value) => [...value, makeLog(Date.now(), `Camera discovery failed: ${message}`, "warning")]);
-      });
-  }, []);
-
-  useEffect(() => {
     let active = true;
+    let timer: number;
     const poll = async () => {
       try {
         const status = await getCameraStreamStatus(lastStreamerLogId.current);
+        const discovered = status.streaming ? await loadCameras() : null;
         if (!active) return;
         setStreaming(status.streaming);
+        setServiceError("");
+        if (status.streaming && !wasStreaming.current) setStreamGeneration((value) => value + 1);
+        wasStreaming.current = status.streaming;
+        if (discovered) setStreamCameras(discovered);
+        else setStreamCameras((current) => current.map((camera) => ({ ...camera,
+          online: false, previewActive: false, inputFps: 0, streamFps: 0, publisherCount: 0 })));
         if (status.logs.length > 0) {
           lastStreamerLogId.current = status.logs[status.logs.length - 1].id;
           setLogs((current) => [...current, ...status.logs.map((entry) =>
             makeLog(Date.now() * 1000 + entry.id, entry.message, entry.stream === "stderr" ? "warning" : "info"),
-          )]);
+          )].slice(-2000));
         }
-      } catch { /* retain the last known state */ }
+      } catch (error) {
+        if (active) {
+          setStreaming(false);
+          wasStreaming.current = false;
+          setServiceError(error instanceof Error ? error.message : "Camera service unavailable");
+        }
+      } finally {
+        if (active) timer = window.setTimeout(() => void poll(), 1000);
+      }
     };
     void poll();
-    const timer = window.setInterval(() => void poll(), 400);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => { active = false; window.clearTimeout(timer); };
   }, []);
 
   const startStream = async () => {
@@ -237,13 +253,17 @@ export default function CameraPage() {
     }
   };
 
+  const onlineCount = streaming ? streamCameras.filter((camera) => camera.online).length : 0;
+  const previewCount = streaming ? streamCameras.filter((camera) => camera.previewActive).length : 0;
+
   return (
     <div className="page">
       <header className="page-header">
-        <div><p className="eyebrow">Live workspace</p><h1>Camera check</h1><p>Monitor and verify all connected camera feeds.</p></div>
-        <div className="header-status"><span className={streaming ? "status-pulse" : "status-pulse offline"} /><div><strong>{streaming ? streamCameras.length : 0} online</strong><small>{streaming ? "Streams healthy" : "Streamer stopped"}</small></div></div>
+        <div><p className="eyebrow">Live workspace</p><h1>Streamer</h1><p>Monitor ROS camera images and measured stream frequencies.</p></div>
+        <div className="header-status"><span className={onlineCount > 0 ? "status-pulse" : "status-pulse offline"} /><div><strong>{streaming ? `${onlineCount} / ${streamCameras.length} topics online` : `${streamCameras.length} configured topics`}</strong><small>{streaming ? `${previewCount} previews active · 30 Hz limit` : "Preview service stopped"}</small></div></div>
       </header>
 
+      {serviceError && <p className="service-error" role="alert">{serviceError}. Retrying automatically…</p>}
       <section className="toolbar surface">
         <div className="toolbar-group"><SlidersHorizontal size={17} /><span>Grid layout</span>
           <div className="segmented">
@@ -270,9 +290,11 @@ export default function CameraPage() {
         <label className="focus-color">Color<input type="color" value={focus.color} onChange={(event) => setFocus((value) => ({ ...value, color: event.target.value }))} /></label>
       </section>
 
+      <p className="stream-explanation">{streaming ? `${onlineCount} of ${streamCameras.length} configured topics are delivering images. Frequencies are measured over 2 seconds; a topic is offline after 2 seconds without an image.` : "Preview monitoring is stopped. Start the stream to check topic activity and view images."}</p>
       <section className="camera-grid" style={{ "--columns": columns } as React.CSSProperties}>
-        {streamCameras.map((camera) => <CameraTile camera={camera} focus={focus} key={`${camera.id}-${streamGeneration}`} />)}
+        {streamCameras.map((camera) => <CameraTile camera={camera} focus={focus} streaming={streaming} key={`${camera.id}-${streamGeneration}`} />)}
       </section>
+      {streamCameras.length === 0 && <section className="surface pending-feature"><p>{streaming ? "Loading configured topics…" : "Start the preview service to load your configured camera topics."}</p></section>}
       <LogPanel title="Camera service" logs={logs} onClear={() => setLogs([])} />
     </div>
   );

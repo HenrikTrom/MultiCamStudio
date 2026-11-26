@@ -1,54 +1,50 @@
 services:
   multicamstudio:
-    image: my/${TAG1:?Set TAG1 in .env}_${CUDA_VERSION}
+    image: mcs-ros2:${ROS_DISTRO:-jazzy}
     pull_policy: never
     build:
-      context: ./build
+      context: .
+      dockerfile: build/Dockerfile
+      target: runtime
       args:
-        UBUNTU_IMAGE_VERSION: ${UBUNTU_IMAGE_VERSION}
-        CUDA_VERSION: ${CUDA_VERSION}
-        CUDA_ARCH_BIN: ${CUDA_ARCH_BIN}
-        OPENCV_VERSION: ${OPENCV_VERSION}
-        CMAKE_VERSION: ${CMAKE_VERSION}
-        CPP_OPTIMIZATIONS: ${CPP_OPTIMIZATIONS}
-        FLIR_CAMERA_COUNT: ${FLIR_CAMERA_COUNT}
-    group_add:
-      - "${FLIR_GID}"
+        ROS_DISTRO: ${ROS_DISTRO:-jazzy}
     network_mode: host
-    command: /opt/modules/MultiCamStudio/start.sh
-    tty: true
-    stdin_open: true
-    runtime: nvidia
-    restart: always
+    # Host networking and IPC allow DDS discovery/shared memory with host ROS nodes.
+    ipc: host
+    init: true
+    user: "${UID:-1000}:${GID:-1000}"
+    restart: unless-stopped
     environment:
-      HOST_UID: "${UID}"
-      HOST_GID: "${GID}"
-      PORT: "${PORT:-5173}"
-      DISPLAY: ${DISPLAY:-}
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: all
-      TERM: xterm-256color
-      DEBUG_COLORS: "true"
-      COLORTERM: truecolor
-      HOME: /tmp
-      npm_config_cache: /tmp/npm-cache
-      CAMERA_SETTINGS_FILE: ${CAMERA_SETTINGS_FILE}
-      EYE_TRACKER_SETTINGS_FILE: ${EYE_TRACKER_SETTINGS_FILE:-/home/docker/workspace/cfg/eye_tracker_settings.json}
-      CAMERA_CALIBRATION_FILE: ${CAMERA_CALIBRATION_FILE}
-      CALIBRATION_DATA: ${CALIBRATION_DATA}
-
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      ROS_AUTOMATIC_DISCOVERY_RANGE: ${ROS_AUTOMATIC_DISCOVERY_RANGE:-SUBNET}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      # UDP also works with publishers in containers using private IPC namespaces.
+      FASTDDS_BUILTIN_TRANSPORTS: ${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}
+      ROS_IMAGE_TOPIC_TEMPLATE: ${ROS_IMAGE_TOPIC_TEMPLATE:-}
+      CAMERA_CALIBRATION_FILE: /home/docker/workspace/cfg/CameraCalibrationSettings.json
+      PORT: ${PORT:-5173}
+      STREAMER_PORT: ${STREAMER_PORT:-8080}
+      STREAMER_BITRATE_MBIT: ${STREAMER_BITRATE_MBIT:-4}
+      CALIBRATION_DATA: /home/docker/workspace/data
+      RECORD_FPS: ${RECORD_FPS:-30}
+      RECORD_SYNC_TOLERANCE_MS: ${RECORD_SYNC_TOLERANCE_MS:-5}
+      RECORD_START_TIMEOUT_SEC: ${RECORD_START_TIMEOUT_SEC:-15}
+      RECORD_STALL_TIMEOUT_SEC: ${RECORD_STALL_TIMEOUT_SEC:-5}
+      RECORD_ENCODER: ${RECORD_ENCODER:-libx264}
+      CALIBRATION_CAPTURE_FRAMES: ${CALIBRATION_CAPTURE_FRAMES:-30}
+      CALIBRATION_CAPTURE_INTERVAL_MS: ${CALIBRATION_CAPTURE_INTERVAL_MS:-500}
+      CALIBRATION_MAX_REPROJECTION_ERROR_PX: ${CALIBRATION_MAX_REPROJECTION_ERROR_PX:-5}
+      STREAMER_ENCODER: ${STREAMER_ENCODER:-libx264}
     volumes:
-      - ./:/home/docker/workspace
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
-      
-    devices:
-      - /dev/bus/usb:/dev/bus/usb
-
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu, video, compute, utility]
+      - type: bind
+        source: ${MCS_CONFIG_DIR:-./cfg}
+        target: /home/docker/workspace/cfg
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MCS_DATA_DIR:-./data}
+        target: /home/docker/workspace/data
+        bind:
+          create_host_path: false
+    stop_grace_period: 30s

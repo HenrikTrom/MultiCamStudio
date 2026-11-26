@@ -1,2 +1,13 @@
 *.tar
 *.gz
+# Local ROS 2 development products
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# ROS recording/calibration artifacts and preserved calibration versions
+data/calibration/
+data/.session-settings/
+data/recordings/**
+data/logs/archive/
+data/test/ros2-stage3-verification/

@@ -1,0 +1,1 @@
+# Docker uses the repository-root .dockerignore with the current Compose build context.

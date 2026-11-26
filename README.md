@@ -1,26 +1,51 @@
-# MultiCamStudio
+# MultiCam Control Studio ROS2
 
-![Overview](/content/output.gif)
+A browser GUI for viewing ROS 2 Jazzy camera images, recording synchronized videos,
+and calibrating multi-camera setups.
 
-MultiCamStudio provides a browser interface for checking FLIR camera feeds, calibrating a multi-camera setup, and recording synchronized videos. It is intended for laboratory recording workflows, including behavioral research.
+From a checkout with its submodules initialized:
 
-Read the [installation and researcher instructions](instructions.md) for Spinnaker container setup, launching the GUI, camera checks, calibration, recording, and automatic startup with crontab.
+```sh
+docker compose build
+docker compose up -d
+```
 
-The **HRSoc Recorder** tab adds Pupil eye tracker control, automatically refreshed
-connection status, and per-frame timestamp JSON alongside synchronized FLIR
-videos. It also logs periodic Pupil clock measurements for alignment with FLIR
-timestamps, including a CSV conversion helper. Configure tracker addresses in [eye tracker settings](cfg/eye_tracker_settings.json).
-See [eye tracker setup and recording](build/modules/flir-eye-tracker-record/README.md)
-for addresses, tracker count, output format and build instructions.
+Open **http://localhost:5173**. This launches the complete GUI and preview service.
+The production image starts prebuilt code; it installs no dependencies and runs no
+application build commands at startup.
 
-## Important: adapt the camera configuration
+For a new host, copy [.env.example](.env.example) to `.env`, set `UID`/`GID` to match
+`id -u` / `id -g`, and match the ROS domain/topic template to your publishers. Keep
+your existing `.env` when updating this checkout. Camera IDs and board settings are
+in [cfg/CameraCalibrationSettings.json](cfg/CameraCalibrationSettings.json).
 
-Before use, edit [camera settings](cfg/camera_settings_1024x768.json) and [camera calibration settings](cfg/CameraCalibrationSettings.json) for your hardware. Use the actual camera serial numbers in both files. Set `master_serial` to the camera sending the synchronization signal through the trigger cable, and set `master_line` and `slave_line` to match the connected output and input lines. `main_cam_serial` selects the calibration's reference frame and can differ from the trigger master.
+- **Streamer:** live RGB8 images, actual online-topic counts, input/preview rates,
+  histograms, and focus peaking. Previews are capped at 30 Hz.
+- **Record:** aligned H.264 camera videos with source timestamp logs and resolution
+  checks. Each session gets its own directory under `data/recordings`.
+- **Calibration:** synchronized image capture, the unchanged `multi-camera-calib`
+  solver, and validation against new ROS images. Existing calibration versions are
+  preserved before publishing a validated replacement.
 
-When adding cameras, add a full entry to `cams`, add the same serial to calibration `serial_numbers`, update `FLIR_CAMERA_COUNT` in `.env`, and rebuild the container. See [camera configuration instructions](instructions.md#important-adapt-the-camera-and-calibration-settings) for details.
+CPU encoding is the default. To expose an NVIDIA GPU for preview encoding:
 
-## Important: prepare a rigid calibration board
+```sh
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d
+```
 
-Print the [calibration pattern](build/modules/multi-camera-calib/content/board_pattern.MCC_Patt1040x720.bmp) at **1040 × 720 mm including the border**, with **80 mm squares**, and glue it to a flat, stiff surface. We used a 10 cm “Pressholzplatte” (pressed-wood board). **A wobbly, bent, or flexible pattern deteriorates calibration accuracy.** See [board preparation instructions](instructions.md#create-the-calibration-board) for printing and mounting checks.
+Development is explicit and separate from normal startup:
 
-Host command examples use `<path-to-MultiCamStudio>` as a placeholder for your checkout's absolute path. Replace it before running commands; the fixed paths inside the container remain as documented.
+```sh
+docker compose down
+docker compose -f docker-compose.yaml -f docker-compose.devel.yaml up -d --build
+```
+
+The development container builds the ROS workspace incrementally, starts the same
+process API, and serves the GUI with frontend hot reload. To return to production,
+stop that development configuration and run `docker compose up -d`.
+
+See [installation and everyday use](instructions.md) for setup, recording,
+calibration, updates, and troubleshooting. See [technical setup and development](ros2_ws/README.md)
+for data formats, synchronization, Docker stages, APIs, and verification commands.
+The [archived direct-camera instructions](docs/legacy-direct-camera.md) are retained
+for reference.

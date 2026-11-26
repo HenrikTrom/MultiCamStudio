@@ -1,0 +1,8 @@
+# Optional NVENC access: docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d
+services:
+  multicamstudio:
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+      STREAMER_ENCODER: h264_nvenc

@@ -63,11 +63,13 @@ function waitForMediaSource(mediaSource: MediaSource, signal: AbortSignal) {
 
 export default function CameraStream({
   camera,
+  enabled,
   focus,
   onStatus,
   onHistogram,
 }: {
   camera: Camera;
+  enabled: boolean;
   focus: FocusPeakingSettings;
   onStatus: (message: string, error?: boolean) => void;
   onHistogram: (histogram: HistogramData) => void;
@@ -82,110 +84,141 @@ export default function CameraStream({
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+    if (!enabled) return;
+    const mime = `video/mp4; codecs="${camera.codec}"`;
+    if (!window.MediaSource || !MediaSource.isTypeSupported(mime)) {
+      onStatus("This browser cannot play H.264 previews. Try Chrome or Edge.", true);
+      return;
+    }
     const controller = new AbortController();
-    let objectUrl = "";
-
     const play = async () => {
-      if (!window.MediaSource) throw new Error("MediaSource is unavailable");
-      const mime = `video/mp4; codecs="${camera.codec}"`;
-      if (!MediaSource.isTypeSupported(mime)) throw new Error(`Unsupported codec ${camera.codec}`);
+      const connection = new AbortController();
+      const cancel = () => connection.abort();
+      controller.signal.addEventListener("abort", cancel, { once: true });
+      let objectUrl = "";
+      try {
+        const mediaSource = new MediaSource();
+        objectUrl = URL.createObjectURL(mediaSource);
+        video.src = objectUrl;
+        await waitForMediaSource(mediaSource, connection.signal);
+        const sourceBuffer = mediaSource.addSourceBuffer(mime);
+        sourceBuffer.mode = "segments";
+        sourceBuffer.addEventListener("error", () => connection.abort(), { once: true });
+        const appendQueue: Array<{ data: Uint8Array; init: boolean; key: boolean }> = [];
+        let initAppended = false;
 
-      const mediaSource = new MediaSource();
-      objectUrl = URL.createObjectURL(mediaSource);
-      video.src = objectUrl;
-      await waitForMediaSource(mediaSource, controller.signal);
-      const sourceBuffer = mediaSource.addSourceBuffer(mime);
-      sourceBuffer.mode = "segments";
-      const appendQueue: Array<{ data: Uint8Array; init: boolean; key: boolean }> = [];
-      let initAppended = false;
+        const pump = () => {
+          if (sourceBuffer.updating || appendQueue.length === 0 || mediaSource.readyState !== "open") return;
+          const item = appendQueue.shift();
+          if (!item) return;
+          try {
+            sourceBuffer.appendBuffer(new Uint8Array(item.data).buffer);
+            if (item.init) initAppended = true;
+          } catch (error) {
+            onStatus(error instanceof Error ? error.message : "Could not append video data", true);
+          }
+        };
+        sourceBuffer.addEventListener("updateend", () => {
+          if (video.buffered.length > 0) {
+            const end = video.buffered.end(video.buffered.length - 1);
+            if (video.paused) void video.play().catch(() => undefined);
+            if (end - video.currentTime > 0.35) video.currentTime = Math.max(0, end - 0.08);
+            if (video.buffered.start(0) < end - 3 && !sourceBuffer.updating) {
+              try { sourceBuffer.remove(0, end - 2); } catch { /* retry on a later frame */ }
+            }
+          }
+          onStatus("Live");
+          pump();
+        });
 
-      const pump = () => {
-        if (sourceBuffer.updating || appendQueue.length === 0 || mediaSource.readyState !== "open") return;
-        const item = appendQueue.shift();
-        if (!item) return;
-        try {
-          sourceBuffer.appendBuffer(new Uint8Array(item.data).buffer);
-          if (item.init) initAppended = true;
-        } catch (error) {
-          onStatus(error instanceof Error ? error.message : "Could not append video data", true);
-        }
-      };
-      sourceBuffer.addEventListener("updateend", () => {
-        if (video.buffered.length > 0) {
-          const end = video.buffered.end(video.buffered.length - 1);
-          if (video.paused) void video.play().catch(() => undefined);
-          if (end - video.currentTime > 0.35) video.currentTime = Math.max(0, end - 0.08);
-          if (video.buffered.start(0) < end - 3 && !sourceBuffer.updating) {
-            try { sourceBuffer.remove(0, end - 2); } catch { /* retry on a later frame */ }
+        const enqueue = (data: Uint8Array, flags: number) => {
+          const item = { data, init: (flags & 1) !== 0, key: (flags & 2) !== 0 };
+          appendQueue.push(item);
+          if (appendQueue.length > 20) {
+            let lastKey = -1;
+            appendQueue.forEach((queued, index) => { if (queued.key) lastKey = index; });
+            if (lastKey > 0) {
+              const pendingInit = !initAppended ? appendQueue.find((queued) => queued.init) : undefined;
+              appendQueue.splice(0, lastKey);
+              if (pendingInit && !appendQueue[0]?.init) appendQueue.unshift(pendingInit);
+            }
+          }
+          pump();
+        };
+
+        const response = await fetch(camera.source, { cache: "no-store", signal: connection.signal });
+        if (!response.ok || !response.body) throw new Error(`Stream returned HTTP ${response.status}`);
+        const reader = response.body.getReader();
+        const readFrame = async () => {
+          const timeout = window.setTimeout(() => connection.abort(), 5000);
+          try { return await reader.read(); }
+          finally { window.clearTimeout(timeout); }
+        };
+        const bytes = new ByteQueue();
+        let header: { flags: number; size: number } | null = null;
+        while (!controller.signal.aborted) {
+          const { value, done } = await readFrame();
+          if (done) break;
+          bytes.push(value);
+          while (true) {
+            if (!header) {
+              if (bytes.length < 13) break;
+              const raw = bytes.read(13);
+              const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+              header = { flags: raw[0], size: view.getUint32(1, false) };
+            }
+            if (bytes.length < header.size) break;
+            enqueue(bytes.read(header.size), header.flags);
+            header = null;
           }
         }
-        onStatus("Live");
-        pump();
-      });
-
-      const enqueue = (data: Uint8Array, flags: number) => {
-        const item = { data, init: (flags & 1) !== 0, key: (flags & 2) !== 0 };
-        appendQueue.push(item);
-        if (appendQueue.length > 20) {
-          let lastKey = -1;
-          appendQueue.forEach((queued, index) => { if (queued.key) lastKey = index; });
-          if (lastKey > 0) {
-            const pendingInit = !initAppended ? appendQueue.find((queued) => queued.init) : undefined;
-            appendQueue.splice(0, lastKey);
-            if (pendingInit && !appendQueue[0]?.init) appendQueue.unshift(pendingInit);
-          }
+        if (!controller.signal.aborted) throw new Error("Stream ended");
+      } finally {
+        controller.signal.removeEventListener("abort", cancel);
+        connection.abort();
+        if (video.getAttribute("src") === objectUrl) {
+          video.removeAttribute("src");
+          video.load();
         }
-        pump();
-      };
-
-      const response = await fetch(camera.source, { cache: "no-store", signal: controller.signal });
-      if (!response.ok || !response.body) throw new Error(`Stream returned HTTP ${response.status}`);
-      const reader = response.body.getReader();
-      const bytes = new ByteQueue();
-      let header: { flags: number; size: number } | null = null;
-      while (!controller.signal.aborted) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        bytes.push(value);
-        while (true) {
-          if (!header) {
-            if (bytes.length < 13) break;
-            const raw = bytes.read(13);
-            const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
-            header = { flags: raw[0], size: view.getUint32(1, false) };
-          }
-          if (bytes.length < header.size) break;
-          enqueue(bytes.read(header.size), header.flags);
-          header = null;
-        }
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
       }
-      if (!controller.signal.aborted) throw new Error("Stream ended");
     };
 
-    onStatus("Connecting…");
-    void play().catch((error: unknown) => {
-      if (!controller.signal.aborted) onStatus(error instanceof Error ? error.message : "Stream failed", true);
-    });
-    return () => {
-      controller.abort();
-      video.removeAttribute("src");
-      video.load();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [camera.codec, camera.source, onStatus]);
+    void (async () => {
+      while (!controller.signal.aborted) {
+        onStatus("Connecting…");
+        try { await play(); }
+        catch (error) {
+          if (!controller.signal.aborted) onStatus(
+            `${error instanceof DOMException && error.name === "AbortError" ? "Preview interrupted" : error instanceof Error ? error.message : "Stream failed"} · reconnecting…`, true);
+        }
+        if (controller.signal.aborted) break;
+        await new Promise<void>((done) => {
+          const finish = () => { window.clearTimeout(timer); controller.signal.removeEventListener("abort", finish); done(); };
+          const timer = window.setTimeout(finish, 1500);
+          controller.signal.addEventListener("abort", finish, { once: true });
+        });
+      }
+    })();
+    return () => controller.abort();
+  }, [enabled, camera.codec, camera.source, onStatus]);
 
   useEffect(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas) return;
+    if (!video || !canvas || !enabled) return;
     const gl = canvas.getContext("webgl2", { alpha: false, antialias: false, depth: false });
     if (!gl) {
-      onStatus("Live · WebGL2 focus peaking unavailable");
       return;
     }
+    const shaders: WebGLShader[] = [];
+    let program: WebGLProgram | null = null;
+    let buffer: WebGLBuffer | null = null;
+    let texture: WebGLTexture | null = null;
     const compile = (type: number, source: string) => {
       const shader = gl.createShader(type);
       if (!shader) throw new Error("Could not create focus shader");
+      shaders.push(shader);
       gl.shaderSource(shader, source);
       gl.compileShader(shader);
       if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader) ?? "Focus shader failed");
@@ -194,7 +227,7 @@ export default function CameraStream({
 
     let animation = 0;
     try {
-      const program = gl.createProgram();
+      program = gl.createProgram();
       if (!program) throw new Error("Could not create focus program");
       gl.attachShader(program, compile(gl.VERTEX_SHADER, `#version 300 es
         in vec2 aPosition; out vec2 vUv;
@@ -215,13 +248,13 @@ export default function CameraStream({
       gl.linkProgram(program);
       if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) ?? "Focus program failed");
       gl.useProgram(program);
-      const buffer = gl.createBuffer();
+      buffer = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
       const position = gl.getAttribLocation(program, "aPosition");
       gl.enableVertexAttribArray(position);
       gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
-      const texture = gl.createTexture();
+      texture = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -260,14 +293,22 @@ export default function CameraStream({
       setFocusReady(true);
       animation = requestAnimationFrame(draw);
     } catch (error) {
-      onStatus(error instanceof Error ? `Live · focus peaking: ${error.message}` : "Live · focus peaking unavailable");
+      setFocusReady(false);
+      console.warn("Focus peaking unavailable", error);
     }
-    return () => cancelAnimationFrame(animation);
-  }, [onStatus]);
+    return () => {
+      cancelAnimationFrame(animation);
+      setFocusReady(false);
+      gl.deleteTexture(texture);
+      gl.deleteBuffer(buffer);
+      gl.deleteProgram(program);
+      shaders.forEach((shader) => gl.deleteShader(shader));
+    };
+  }, [enabled]);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || !enabled) return;
     const sample = document.createElement("canvas");
     sample.width = 160;
     sample.height = 120;
@@ -301,12 +342,12 @@ export default function CameraStream({
       } catch { /* the next 10 Hz sample can retry */ }
     }, 100);
     return () => window.clearInterval(timer);
-  }, [onHistogram]);
+  }, [enabled, onHistogram]);
 
   return (
     <>
-      <video ref={videoRef} muted autoPlay playsInline className={focus.enabled && focusReady ? "focus-source" : ""} />
-      <canvas ref={canvasRef} className={focus.enabled && focusReady ? "focus-canvas active" : "focus-canvas"} />
+      <video ref={videoRef} muted autoPlay playsInline className={enabled && focus.enabled && focusReady ? "focus-source" : ""} />
+      <canvas ref={canvasRef} className={enabled && focus.enabled && focusReady ? "focus-canvas active" : "focus-canvas"} />
     </>
   );
 }

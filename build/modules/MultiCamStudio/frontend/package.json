@@ -4,10 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test:recorder": "node --test tests/recorder-api.test.mjs",
+    "test:recorder": "node --test tests/workflows.test.mjs",
     "dev": "vite --host 0.0.0.0",
     "build": "tsc && vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "start": "node server/server.mjs",
+    "test": "node --test tests/server.test.mjs tests/workflows.test.mjs"
   },
   "dependencies": {
     "ajv": "^8.17.1",

@@ -9,6 +9,8 @@ type CalibrationCamera = {
   Extrinsic: number[];
 };
 type CalibrationData = {
+  image_width?: number;
+  image_height?: number;
   main_cam_serial?: string;
   CAMERAS: CalibrationCamera[];
 };
@@ -49,7 +51,9 @@ function cameraGeometry(data: CalibrationData): CameraGeometry[] {
     const fy = intrinsic[4];
     const cx = intrinsic[2];
     const cy = intrinsic[5];
-    const imageCorners: Array<[number, number]> = [[0, 0], [1024, 0], [1024, 768], [0, 768]];
+    const width = data.image_width ?? Math.max(1, Math.round(intrinsic[2] * 2));
+    const height = data.image_height ?? Math.max(1, Math.round(intrinsic[5] * 2));
+    const imageCorners: Array<[number, number]> = [[0, 0], [width, 0], [width, height], [0, height]];
     const corners = imageCorners.map(([u, v]): Point3 => {
       const local: Point3 = [(u - cx) / fx * depth, (v - cy) / fy * depth, depth];
       return add(center, [

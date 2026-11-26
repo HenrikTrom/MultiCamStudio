@@ -1,133 +1,101 @@
 import { useEffect, useRef, useState } from "react";
 import { CircleStop, Folder, HardDrive, Video } from "lucide-react";
-import { getRecorderConfig, getRecorderStatus, makeLog, startRecorder, stopRecorder, type LogEntry, type RecorderMode } from "../api/backend";
+import { getRecorderConfig, getRecorderStatus, makeLog, startRecorder, stopRecorder, type LogEntry } from "../api/backend";
 import LogPanel from "./LogPanel";
-import EyeTrackerStatusPanel from "./EyeTrackerStatusPanel";
 
-const formatDuration = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-const timestampName = () => {
-  const now = new Date();
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-};
-
-export default function RecordPage({
-  recording,
-  onRecordingChange,
-  mode = "camera",
-}: {
-  recording: boolean;
-  onRecordingChange: (recording: boolean) => void;
-  mode?: RecorderMode;
+const sessionName = () => new Date().toISOString().replace(/[:.]/g, "-");
+const duration = (seconds: number) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+export default function RecordPage({ recording, onRecordingChange }: {
+  recording: boolean; onRecordingChange: (value: boolean) => void;
 }) {
-  const [seconds, setSeconds] = useState(0);
-  const [startedAt, setStartedAt] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [recordingName, setRecordingName] = useState(timestampName);
-  const [saveDirectory, setSaveDirectory] = useState("");
   const [config, setConfig] = useState<Awaited<ReturnType<typeof getRecorderConfig>> | null>(null);
-  const [activeMode, setActiveMode] = useState<RecorderMode | null>(null);
-  const [ready, setReady] = useState(false);
-  const [statusError, setStatusError] = useState("");
-  const thisRecording = recording && activeMode === mode;
-  const otherRecording = recording && activeMode !== mode;
-  const lastLogId = useRef(0);
+  const [status, setStatus] = useState<Awaited<ReturnType<typeof getRecorderStatus>> | null>(null);
+  const [name, setName] = useState(sessionName);
+  const [directory, setDirectory] = useState("");
+  const [fps, setFps] = useState(30);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [connectionError, setConnectionError] = useState("");
+  const [seconds, setSeconds] = useState(0);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-
+  const after = useRef(0);
+  const initialized = useRef(false);
   useEffect(() => {
     let active = true;
-    void getRecorderConfig().then((value) => {
-      if (!active) return;
-      setConfig(value);
-      setSaveDirectory(value.saveDirectory);
-    }).catch((error: unknown) => {
-      if (active) setLogs((current) => [...current, makeLog(Date.now(), error instanceof Error ? error.message : "Could not load recorder settings", "warning")]);
-    });
-    return () => { active = false; };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
+    let timer: number;
     const poll = async () => {
       try {
-        const status = await getRecorderStatus(lastLogId.current);
+        const [next, sources] = await Promise.all([getRecorderStatus(after.current), getRecorderConfig()]);
         if (!active) return;
-        onRecordingChange(status.recording);
-        setActiveMode(status.mode);
-        setReady(status.ready);
-        setStatusError("");
-        setStartedAt(status.startedAt);
-        if (status.recording && status.mode === mode && status.session) {
-          setRecordingName(status.session.name);
-          setSaveDirectory(status.session.saveDirectory);
+        setConnectionError(""); setConfig(sources); setStatus(next); onRecordingChange(next.recording);
+        if (!initialized.current) {
+          setDirectory(next.session?.saveDirectory ?? sources.saveDirectory);
+          setName(next.recording && next.session ? next.session.name : sessionName());
+          setFps(sources.fps); initialized.current = true;
         }
-        if (status.logs.length > 0) {
-          lastLogId.current = status.logs[status.logs.length - 1].id;
-          setLogs((current) => [...current, ...status.logs.map((entry) =>
-            makeLog(Date.now() * 1000 + entry.id, entry.message, entry.stream === "stderr" ? "warning" : "info"),
-          )].slice(-2000));
+        if (next.logs.length) {
+          after.current = next.logs[next.logs.length - 1].id;
+          setLogs((current) => [...current, ...next.logs.map((line) => makeLog(line.id, line.message,
+            line.stream === "stderr" ? "warning" : "info"))].slice(-2000));
         }
-      } catch { if (active) setStatusError("Recorder status unavailable. Check the backend connection."); }
+        setSeconds(next.startedAt ? Math.floor((Date.now() - next.startedAt) / 1000) : 0);
+      } catch (reason) { if (active) setConnectionError(reason instanceof Error ? reason.message : "Recorder service unavailable"); }
+      finally { if (active) timer = window.setTimeout(() => void poll(), 1000); }
     };
     void poll();
-    const timer = window.setInterval(() => void poll(), 300);
-    return () => { active = false; window.clearInterval(timer); };
-  }, [onRecordingChange, mode]);
-
-  useEffect(() => {
-    const update = () => setSeconds(startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0);
-    update();
-    const timer = window.setInterval(update, 1000);
-    return () => window.clearInterval(timer);
-  }, [startedAt]);
-
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [onRecordingChange]);
   const toggle = async () => {
-    setBusy(true);
+    setBusy(true); setError("");
     try {
       if (recording) {
-        await stopRecorder();
-        onRecordingChange(false);
+        await stopRecorder(); onRecordingChange(false); setName(sessionName());
       } else {
-        const result = await startRecorder(recordingName, saveDirectory, mode);
-        onRecordingChange(Boolean(result.recording));
-        setActiveMode(mode);
-        setStartedAt(result.startedAt ?? null);
+        await startRecorder(name, directory, "camera", fps); onRecordingChange(true);
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Recorder command failed";
-      setLogs((current) => [...current, makeLog(Date.now(), message, "warning")]);
-    } finally {
-      setBusy(false);
-    }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Recording command failed"); }
+    finally { setBusy(false); }
   };
-
-  return (
-    <div className="page">
-      <header className="page-header"><div><p className="eyebrow">Synchronized capture</p><h1>{mode === "hrsoc" ? "HRSoc Recorder" : "Record"}</h1><p>{mode === "hrsoc" ? "Record synchronized FLIR videos and control Pupil eye tracker recordings." : "Record all camera sources into a single timestamped session."}</p></div></header>
-      {statusError && <p className="settings-error" role="alert">{statusError}</p>}
-      {otherRecording && <p className="recorder-note">The {activeMode === "hrsoc" ? "HRSoc Recorder" : "Record"} tab is using the cameras. Stop that session before starting another.</p>}
-      <section className={thisRecording ? "record-hero surface active" : "record-hero surface"}>
-        <div className="recording-state"><span className="record-orb" /><div><span>{thisRecording ? ready ? "RECORDING" : "PREPARING / FINALIZING" : otherRecording ? "CAMERAS IN USE" : "READY TO RECORD"}</span><strong>{formatDuration(thisRecording ? seconds : 0)}</strong><small>{thisRecording && ready ? `${config?.cameras.length ?? 0} FLIR streams writing` : "Camera configuration is checked when recording starts"}</small></div></div>
-        <button className={thisRecording ? "stop-button" : "record-button"} disabled={busy || otherRecording || (!recording && (!config || !recordingName.trim() || !saveDirectory.trim() || Boolean(statusError)))} onClick={toggle}>{thisRecording ? <CircleStop size={18} /> : <span className="button-record-dot" />}{busy ? "Please wait…" : thisRecording ? "Stop recording" : "Start recording"}</button>
+  const dropped = status?.progress?.dropped_frames.reduce((sum, value) => sum + value, 0) ?? 0;
+  return <div className="page">
+    <header className="page-header"><div><p className="eyebrow">Synchronized capture</p><h1>Record</h1>
+      <p>Save aligned camera videos using ROS image timestamps.</p></div></header>
+    {(error || connectionError || status?.error) && <p className="settings-error" role="alert">{error || connectionError || status?.error}</p>}
+    {status?.calibrationRunning && <p className="recorder-note">Calibration is running. Finish or cancel it before starting a recording.</p>}
+    <section className={recording ? "record-hero surface active" : "record-hero surface"}>
+      <div className="recording-state"><span className="record-orb" /><div>
+        <span>{recording ? status?.ready ? "RECORDING" : "PREPARING / FINALIZING" : "READY TO RECORD"}</span>
+        <strong>{duration(seconds)}</strong><small>{status?.progress ? `${status.progress.frames} aligned frames per camera` : "All cameras must deliver RGB8 images at the same resolution"}</small>
+      </div></div>
+      <button className={recording ? "stop-button" : "record-button"}
+        disabled={busy || Boolean(status?.calibrationRunning) || (!recording && (!config || !name.trim() || !directory.trim()))} onClick={toggle}>
+        {recording ? <CircleStop size={18} /> : <span className="button-record-dot" />}
+        {busy ? "Please wait…" : recording ? "Stop recording" : "Start recording"}
+      </button>
+    </section>
+    <div className="two-column-layout record-layout">
+      <section className="surface settings-card">
+        <div className="section-title"><div className="title-icon"><Folder size={19} /></div><div><h2>Session settings</h2><p>A new folder is created for each session.</p></div></div>
+        <div className="form-stack">
+          <label>Session name<input value={name} disabled={recording || busy} onChange={(event) => setName(event.target.value)} /></label>
+          <label>Save directory<input value={directory} disabled={recording || busy} onChange={(event) => setDirectory(event.target.value)} /></label>
+          <label>Recording frequency (Hz)<input type="number" min="1" max="240" value={fps} disabled={recording || busy} onChange={(event) => setFps(Number(event.target.value))} /></label>
+          <p className="recorder-note">Output: <code>{directory}/{name}</code></p>
+          <p className="recorder-note">Each camera produces an MP4 video. Timestamp and session files document frame alignment and unmatched frames. The maximum timestamp difference is {config?.syncToleranceMs ?? 5} ms.</p>
+          {status?.session && <p className="recorder-note">Latest session: <code>{status.session.outputDirectory}</code></p>}
+          {dropped > 0 && <p className="recorder-note">{dropped} unmatched or buffered input frames were dropped. Saved frame indices remain aligned across videos.</p>}
+        </div>
       </section>
-      <div className="two-column-layout record-layout">
-        <section className="surface settings-card">
-          <div className="section-title"><div className="title-icon"><Folder size={19} /></div><div><h2>Session settings</h2><p>Choose naming and capture preferences.</p></div></div>
-          <div className="form-stack">
-            <label>Session name<input value={recordingName} disabled={recording} onChange={(event) => setRecordingName(event.target.value)} /></label>
-            <label>Save directory<input value={saveDirectory} disabled={recording} onChange={(event) => setSaveDirectory(event.target.value)} placeholder="Path on the recording server" /></label>
-            <p className="recorder-note">Output: <code>{saveDirectory.replace(/\/$/, "")}/{recordingName}</code></p>
-            {mode === "hrsoc" && <p className="recorder-note">FLIR videos and <code>frame_timestamps.json</code> are saved here. Eye tracker recordings use the same session name and are stored on each Pupil Capture computer.</p>}
-          </div>
-        </section>
-        <section className="surface source-list">
-          <div className="section-title"><div className="title-icon"><Video size={19} /></div><div><h2>Sources</h2><p>{config?.cameras.length ?? 0} cameras configured</p></div></div>
-          {config?.cameras.map((camera) => <div className="source-row" key={camera.serial}><span className="source-check"><span /></span><div><strong>Camera {camera.serial}</strong><small>{config.width} × {config.height} · {config.fps} FPS</small></div><span className="source-ready">Configured</span></div>)}
-          <div className="storage"><HardDrive size={17} /><div><span>Storage location</span><strong>{saveDirectory || "Loading…"}</strong></div></div>
-        </section>
-      </div>
-      {mode === "hrsoc" && <EyeTrackerStatusPanel />}
-      <LogPanel title={mode === "hrsoc" ? "HRSoc recorder output" : "Recorder output"} logs={logs} onClear={() => setLogs([])} />
+      <section className="surface source-list">
+        <div className="section-title"><div className="title-icon"><Video size={19} /></div><div><h2>Sources</h2><p>{config?.cameras.length ?? 0} configured cameras</p></div></div>
+        {config?.cameras.map((camera) => <div className="source-row" key={camera.serial}>
+          <span className={camera.online ? "source-check" : "source-check offline"}><span /></span>
+          <div><strong>Camera {camera.serial}</strong><small>{camera.width ? `${camera.width} × ${camera.height}` : "Waiting for images"} · {camera.inputFps.toFixed(1)} Hz input</small></div>
+          <span className="source-ready">{camera.online ? "Online" : "Offline"}</span>
+        </div>)}
+        <div className="storage"><HardDrive size={17} /><div><span>Storage location</span><strong>{directory || "Loading…"}</strong></div></div>
+      </section>
     </div>
-  );
+    <LogPanel title="Recorder output" logs={logs} onClear={() => setLogs([])} />
+  </div>;
 }

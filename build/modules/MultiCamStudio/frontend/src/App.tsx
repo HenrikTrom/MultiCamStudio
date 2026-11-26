@@ -1,25 +1,23 @@
 import { useEffect, useState } from "react";
-import { Aperture, Camera, CircleDot, Eye, Moon, Radio, Settings, Sun } from "lucide-react";
-import CameraPage from "./components/CameraPage";
-import CalibrationPage from "./components/CalibrationPage";
+import { Aperture, Camera, CircleDot, Moon, Radio, Settings, Sun } from "lucide-react";
 import RecordPage from "./components/RecordPage";
+import CalibrationPage from "./components/CalibrationPage";
+import { getRecorderStatus } from "./api/backend";
+import CameraPage from "./components/CameraPage";
 import SettingsModal from "./components/SettingsModal";
-import { getRecorderStatus, type RecorderMode } from "./api/backend";
 
-type Tab = "camera" | "calibration" | "record" | "hrsoc";
+type Tab = "camera" | "calibration" | "record";
 
 const tabs = [
-  { id: "camera" as const, label: "Camera Check", icon: Radio },
+  { id: "camera" as const, label: "Streamer", icon: Radio },
   { id: "calibration" as const, label: "Calibration", icon: Aperture },
   { id: "record" as const, label: "Record", icon: CircleDot },
-  { id: "hrsoc" as const, label: "HRSoc Recorder", icon: Eye },
 ];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("camera");
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [recording, setRecording] = useState(false);
-  const [recorderMode, setRecorderMode] = useState<RecorderMode | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(() => {
     try {
       return window.localStorage.getItem("multicamstudio-theme") !== "light";
@@ -38,13 +36,11 @@ export default function App() {
   useEffect(() => {
     let active = true;
     const poll = async () => {
-      try {
-        const status = await getRecorderStatus();
-        if (active) { setRecording(status.recording); setRecorderMode(status.mode); }
-      } catch { /* keep the last known recorder state */ }
+      try { const status = await getRecorderStatus(); if (active) setRecording(status.recording); }
+      catch { /* Individual pages show service errors. */ }
     };
     void poll();
-    const timer = window.setInterval(() => void poll(), 500);
+    const timer = window.setInterval(() => void poll(), 1000);
     return () => { active = false; window.clearInterval(timer); };
   }, []);
 
@@ -53,20 +49,19 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><Camera size={21} strokeWidth={1.8} /></div>
-          <div><strong>MultiCam</strong><span>Control Studio</span><small>By Henrik Trommer</small></div>
+          <div><strong>MultiCam</strong><span>Control Studio ROS2</span><small>By Henrik Trommer</small></div>
         </div>
 
         <nav aria-label="Main navigation">
           <span className="nav-heading">Workspace</span>
           {tabs.map(({ id, label, icon: Icon }) => (
             <button
-              className={`nav-item${activeTab === id ? " active" : ""}${recording && (id === "hrsoc" && recorderMode === "hrsoc" || id === "record" && recorderMode === "camera") ? " recording" : ""}`}
+              className={`nav-item${activeTab === id ? " active" : ""}${id === "record" && recording ? " recording" : ""}`}
               key={id}
               onClick={() => setActiveTab(id)}
             >
               <Icon size={18} strokeWidth={1.8} />
               <span>{label}</span>
-              {(id === "record" || id === "hrsoc") && <span className={recording && (id === "hrsoc" ? recorderMode === "hrsoc" : recorderMode === "camera") ? "nav-dot recording" : "nav-dot"} />}
             </button>
           ))}
         </nav>
@@ -87,8 +82,8 @@ export default function App() {
 
       <main className="main-content">
         {activeTab === "camera" && <CameraPage />}
+        {activeTab === "record" && <RecordPage recording={recording} onRecordingChange={setRecording} />}
         {activeTab === "calibration" && <CalibrationPage />}
-        {(activeTab === "record" || activeTab === "hrsoc") && <RecordPage key={activeTab} mode={activeTab === "hrsoc" ? "hrsoc" : "camera"} recording={recording} onRecordingChange={setRecording} />}
       </main>
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>

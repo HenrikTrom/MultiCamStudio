@@ -86,17 +86,19 @@ connection status instead of being labeled LIVE.
 ## Image and transport contract
 
 - Input: `sensor_msgs/msg/Image`, **`encoding: rgb8`**, with positive even dimensions
-  for H.264 YUV420. Padded rows are supported through `Image.step`.
+  for YUV420 video. Padded rows are supported through `Image.step`.
 - Best-effort, volatile, depth-one subscriptions accept both best-effort and
   reliable publishers. Other encodings and malformed buffers are rejected.
 - Each camera retains one latest input and one latest encoded fragment, with a
   30 Hz encoding ceiling. Slower publishers are not duplicated or accelerated.
 - Dimensions are learned from the first valid image. Restart the preview service
   after a resolution change. Recording and calibration validate one shared resolution across all cameras.
-- Browser transport is H.264 High in fragmented MP4 with the reference streamer's
-  13-byte record framing. The encoder selects the level for the actual dimensions;
-  the browser's `avc1` codec string comes from the encoded SPS. H.264 MediaSource
-  support is required. 2048x1536 requires a higher level than 4.2.
+- Browser transport is HEVC Main (`hevc_nvenc`) or CPU H.264 High (`libx264`) in
+  fragmented MP4 with the reference streamer's 13-byte record framing. The encoder
+  selects the level for the actual dimensions. HEVC uses an `hvc1` sample entry;
+  the browser codec string includes the profile/tier/level/constraints from `hvcC`.
+  H.264 uses `avc1` with profile/level from the SPS. The browser/device must support
+  MediaSource playback of the selected codec; HEVC availability varies by platform.
 - The default `STREAMER_ENCODER=libx264` uses CPU encoding and skips GPU probes.
   `STREAMER_ENCODER=auto` is also available to try NVENC with CPU fallback.
 
@@ -107,24 +109,24 @@ docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d --build -
 docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml exec multicamstudio mcs-check-gpu
 ```
 
-The GPU override exposes the video driver and selects `h264_nvenc` explicitly for
+The GPU override exposes the video driver and selects `hevc_nvenc` explicitly for
 previews, overriding the base configuration's CPU preview default.
 It requires Docker Compose >= 2.30, a working host NVIDIA driver, NVIDIA Container
-Toolkit, and a GPU supporting NVENC H.264. Always keep both Compose files when
+Toolkit, and a GPU supporting NVENC HEVC. Always keep both Compose files when
 recreating the service. Use `GPU_STREAMER_ENCODER` to override the preview choice
 in GPU mode. Recording keeps its separate `RECORD_ENCODER` setting and CPU default.
 CPU throughput depends on camera count and resolution.
 
-`mcs-check-gpu` encodes synthetic 1280x720 RGB through the preview's real H.264/fMP4
+`mcs-check-gpu` encodes synthetic 1280x720 RGB through the preview's real HEVC/fMP4
 path without initializing ROS discovery or accessing cameras. The native command
-is `camera_tab_ros2_web_streamer --check-encoder [h264_nvenc|libx264|auto] [width height channels]`, with
-`h264_nvenc` as the probe default. Explicit `h264_nvenc` never falls back to CPU;
+is `camera_tab_ros2_web_streamer --check-encoder [hevc_nvenc|libx264|auto] [width height channels]`, with
+`hevc_nvenc` as the probe default. Explicit `hevc_nvenc` never falls back to CPU;
 only `auto` permits fallback. No FFmpeg CLI or compiler is needed in production.
 After stopping active previews, use `mcs-check-gpu 2048 1536 8` to test eight
 simultaneous sessions at that resolution. The check reports the actual encoder
 and browser codec for each channel. It does not benchmark sustained frame rate.
 The regression script `test/test_encoder.py` checks 2048x1536 with CPU encoding;
-use `--encoder h264_nvenc --channels 8` in a GPU-enabled test container to check
+use `--encoder hevc_nvenc --channels 8` in a GPU-enabled test container to check
 concurrent NVENC sessions. `STREAMER_EXECUTABLE` can select a freshly built binary.
 
 ## Recording
@@ -223,7 +225,7 @@ The validation script can also run directly inside the container:
 | `GET /` | MCS React GUI |
 | `GET /healthz` | GUI health and preview-service availability |
 | `GET /api/cameras` | Configured/online/preview counts and per-camera statistics |
-| `GET /api/cameras/<index>/stream` | Framed H.264/fMP4; 503 before encoder readiness |
+| `GET /api/cameras/<index>/stream` | Framed HEVC or H.264/fMP4; 503 before encoder readiness |
 | `GET /local-api/camera-stream/status?after=<log-id>` | Preview-process status and bounded logs |
 | `POST /local-api/camera-stream/start` | Start preview service |
 | `POST /local-api/camera-stream/stop` | Stop preview service without stopping GUI |
@@ -333,7 +335,7 @@ docker compose up -d
 
 ## Tests
 
-Synthetic ROS images verify rates, input validation, real H.264 decoding, padded
+Synthetic ROS images verify rates, input validation, real HEVC/H.264 decoding, padded
 RGB rows, publisher-vs-image liveness, offline timeouts, and recovery:
 
 ```sh

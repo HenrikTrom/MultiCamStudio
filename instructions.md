@@ -11,8 +11,8 @@ Use a Linux host with Docker Engine and the `docker compose` command. ROS does
 not have to be installed on the host. Your camera publishers must be reachable
 on the configured ROS domain and publish `sensor_msgs/msg/Image` with `rgb8`
 encoding. An NVIDIA GPU is optional; CPU encoding works with the default Compose
-configuration. A browser with H.264 MediaSource support, such as Google Chrome,
-is needed for previews.
+configuration. CPU previews require H.264 MediaSource support; GPU previews use
+HEVC/H.265 and require HEVC MediaSource support on the browser/device.
 
 Clone with the required calibration submodules:
 
@@ -164,7 +164,7 @@ Use the same CPU architecture for a transferred image.
 
 Install a working NVIDIA driver and configure NVIDIA Container Toolkit for Docker
 on the host. `nvidia-smi` must work on that host. The selected GPU must support
-NVENC H.264 encoding. Docker Compose 2.30 or newer is required for `gpus: all`.
+NVENC HEVC encoding. Docker Compose 2.30 or newer is required for `gpus: all`.
 
 ```sh
 docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d --build --force-recreate
@@ -172,14 +172,14 @@ docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml exec multicamst
 ```
 
 The GPU override exposes NVIDIA's video driver libraries and explicitly selects
-`h264_nvenc` for previews, replacing the base Compose `STREAMER_ENCODER` CPU
+`hevc_nvenc` for previews, replacing the base Compose `STREAMER_ENCODER` CPU
 default. An existing `.env` with `STREAMER_ENCODER=libx264` does not prevent GPU
 previews. Recording retains its independent `RECORD_ENCODER` setting and CPU
 default. Plain `docker compose up -d` uses CPU mode;
 the GPU filename is not loaded automatically. Use both `-f` arguments on subsequent
 `up`/recreate commands, including after `.env` changes.
 
-`mcs-check-gpu` opens NVENC and produces H.264 video from a synthetic image through
+`mcs-check-gpu` opens NVENC and produces HEVC video from a synthetic image through
 the real preview encoding path. It needs no publishers and creates no recording.
 A successful `nvidia-smi` or a listing of available FFmpeg encoders alone does not
 prove encoding works. The check exits nonzero on failure and does not fall back
@@ -195,8 +195,9 @@ docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml exec multicamst
 
 This holds all requested encoder sessions open together and checks each produces
 video. It tests initialization and encoding, not sustained ROS/browser throughput.
-The encoder selects the H.264 level for the actual dimensions; the browser receives
-that level from the encoded stream. A forced level 4.2 is not valid for 2048x1536.
+The encoder selects the HEVC level for the actual dimensions; the browser receives
+the matching `hvc1` profile/tier/level/constraints from the MP4 decoder configuration.
+HEVC playback support depends on the browser, operating system and decoder.
 
 To inspect the effective configuration before starting:
 
@@ -226,8 +227,8 @@ work without NVIDIA or USB device access.
 | Publishers visible but images missing | Keep the default UDP transport when publishers use private container IPC. |
 | Recorder cannot match frames | Check nonzero acquisition timestamps, their common clock, and synchronization tolerance. |
 | Calibration cannot find the board | Keep sufficient common ChArUco corners visible in every view and match the board settings. |
-| Preview unsupported by browser | Use a browser with H.264 MediaSource support. |
-| GPU previews fail with 2048x1536 images | Rebuild with the current source; older builds forced the incompatible H.264 level 4.2. Run the probe at the actual resolution and channel count. |
+| Preview unsupported by browser | GPU mode needs HEVC/H.265 MediaSource support; CPU mode needs H.264 support. The error reports the selected codec. |
+| GPU previews fail with 2048x1536 images | Rebuild with the current source to use HEVC NVENC with automatic level selection. Run the probe at the actual resolution and channel count. |
 | NVENC fails or previews have encoder errors | Run `mcs-check-gpu` in GPU mode; check the host driver/toolkit, video capability, GPU support, and available encoder sessions. |
 
 To check the installed runtime artifacts without acquiring cameras:

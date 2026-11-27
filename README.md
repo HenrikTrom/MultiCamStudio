@@ -36,11 +36,13 @@ docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml exec multicamst
 ```
 
 Plain `docker compose up -d` does not load the GPU override. Keep both `-f`
-arguments when recreating a GPU installation. The override selects `h264_nvenc`
+arguments when recreating a GPU installation. The override selects `hevc_nvenc`
 for previews even if `.env` still contains a CPU preview default. Recording retains
 its separate `RECORD_ENCODER` setting. The check
 encodes a synthetic image; no camera publishers are required. See
 [GPU setup and troubleshooting](instructions.md#optional-gpu-encoding).
+GPU previews use HEVC/H.265 (`hvc1`) and require browser/device HEVC support;
+CPU previews retain H.264 (`libx264`).
 
 Development is explicit and separate from normal startup:
 

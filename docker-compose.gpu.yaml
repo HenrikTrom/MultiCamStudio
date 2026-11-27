@@ -6,4 +6,4 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
       # The GPU-specific override replaces the CPU preview default in an existing .env.
-      STREAMER_ENCODER: ${GPU_STREAMER_ENCODER:-h264_nvenc}
+      STREAMER_ENCODER: ${GPU_STREAMER_ENCODER:-hevc_nvenc}

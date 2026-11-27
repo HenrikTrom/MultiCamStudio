@@ -186,12 +186,18 @@ def run():
                 path.write_bytes(video)
                 probe = json.loads(subprocess.check_output([
                     "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                    "stream=codec_name,profile,level,width,height", "-of", "json", str(path)]))
+                    "stream=codec_name,codec_tag_string,profile,level,width,height", "-of", "json", str(path)]))
                 stream = probe["streams"][0]
-                assert stream['codec_name'] == 'h264' and stream['profile'] == 'High', stream
                 assert (stream['width'], stream['height']) == (160, 120), stream
-                assert cameras[0]['codec'].startswith('avc1.64'), cameras[0]
-                assert int(cameras[0]['codec'][-2:], 16) == stream['level'], (cameras[0], stream)
+                if env['STREAMER_ENCODER'] == 'hevc_nvenc':
+                    assert stream['codec_name'] == 'hevc' and stream['profile'] == 'Main', stream
+                    assert stream['codec_tag_string'] == 'hvc1', stream
+                    assert cameras[0]['codec'].startswith('hvc1.1.'), cameras[0]
+                    assert int(cameras[0]['codec'].split('.')[3][1:]) == stream['level'], (cameras[0], stream)
+                else:
+                    assert stream['codec_name'] == 'h264' and stream['profile'] == 'High', stream
+                    assert cameras[0]['codec'].startswith('avc1.64'), cameras[0]
+                    assert int(cameras[0]['codec'][-2:], 16) == stream['level'], (cameras[0], stream)
                 assert cameras[0]['encoder'] == env['STREAMER_ENCODER'], cameras[0]
                 pixels = subprocess.check_output([
                     "ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1",
@@ -235,7 +241,7 @@ def run():
                     except (AssertionError, OSError):
                         pass
                 print(f"PASS: 90 Hz input -> {fast_rate:.2f} Hz; 10 Hz input -> {slow_rate:.2f} Hz")
-                print(f"PASS: best-effort/reliable QoS, padded RGB8 decode, H.264 High level {stream['level'] / 10:g}, invalid images,")
+                print(f"PASS: best-effort/reliable QoS, padded RGB8 decode, {stream['codec_name']} {stream['profile']} level_idc {stream['level']}, invalid images,")
                 print("      online/offline rates, invalid/late topics, publisher counts, worker cleanup, SIGTERM")
             except BaseException:
                 log.flush()

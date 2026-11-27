@@ -1,4 +1,4 @@
-// Adapted from backend/src/fast_flir_web_streamer.cpp: same H.264/fMP4 wire format.
+// Adapted from backend/src/fast_flir_web_streamer.cpp: same framed fMP4 transport.
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/image_encodings.hpp>
@@ -6,6 +6,7 @@
 #include <deque>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <cctype>
 #include <cerrno>
 #include <limits>
@@ -17,6 +18,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
+#include <libavutil/macros.h>
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
 }
@@ -50,6 +52,7 @@ namespace {
 using namespace std::chrono_literals;
 
 constexpr const char* kDefaultBrowserCodec = "avc1.64002A";  // Until the first image is encoded.
+constexpr const char* kDefaultHevcBrowserCodec = "hvc1.1.6.L120.B0";
 
 std::string h264_browser_codec(const AVCodecContext* context) {
   const auto* data = context->extradata;
@@ -69,6 +72,39 @@ std::string h264_browser_codec(const AVCodecContext* context) {
     if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && (data[i + 3] & 31) == 7)
       return tag(data[i + 4], data[i + 5], data[i + 6]);
   throw std::runtime_error("H.264 encoder did not provide profile/level information");
+}
+
+std::string hevc_browser_codec(const std::vector<std::uint8_t>& initialization) {
+  // Read the hvcC emitted by the MP4 muxer, which has already parsed the VPS/SPS.
+  for (std::size_t i = 4; i + 27 <= initialization.size(); ++i) {
+    if (initialization[i] != 'h' || initialization[i + 1] != 'v' ||
+        initialization[i + 2] != 'c' || initialization[i + 3] != 'C') continue;
+    const auto box_size = (std::uint32_t(initialization[i - 4]) << 24) |
+        (std::uint32_t(initialization[i - 3]) << 16) |
+        (std::uint32_t(initialization[i - 2]) << 8) | initialization[i - 1];
+    if (box_size < 31 || box_size > initialization.size() - (i - 4)) continue;
+    const auto* data = initialization.data() + i + 4;
+    if (data[0] != 1) continue;
+    std::uint32_t flags = (std::uint32_t(data[2]) << 24) | (std::uint32_t(data[3]) << 16) |
+        (std::uint32_t(data[4]) << 8) | data[5];
+    std::uint32_t compatibility = 0;
+    for (int bit = 0; bit < 32; ++bit) {
+      compatibility = (compatibility << 1) | (flags & 1);
+      flags >>= 1;
+    }
+    std::ostringstream codec;
+    codec << "hvc1.";
+    const auto profile_space = data[1] >> 6;
+    if (profile_space) codec << char('A' + profile_space - 1);
+    codec << unsigned(data[1] & 31) << '.' << std::uppercase << std::hex << compatibility
+          << '.' << ((data[1] & 32) ? 'H' : 'L') << std::dec << unsigned(data[12]);
+    int last_constraint = 11;
+    while (last_constraint >= 6 && data[last_constraint] == 0) --last_constraint;
+    for (int byte = 6; byte <= last_constraint; ++byte)
+      codec << '.' << std::hex << std::setw(2) << std::setfill('0') << unsigned(data[byte]);
+    return codec.str();
+  }
+  throw std::runtime_error("HEVC muxer did not provide an hvcC decoder configuration");
 }
 
 // FFmpeg made the custom AVIO write buffer const in libavformat 61
@@ -256,7 +292,7 @@ class Fmp4Channel {
             {"received_frames", input_rate_.total()}, {"invalid_frames", invalid_frames_},
             {"encoded_frames", output_rate_.total()},
             {"encoder", ready_ ? active_encoder_ : ""},
-            {"codec", ready_ ? active_codec_ : kDefaultBrowserCodec}};
+            {"codec", ready_ ? active_codec_ : (requested_encoder_ == "libx264" ? kDefaultBrowserCodec : kDefaultHevcBrowserCodec)}};
   }
 
   const std::vector<std::uint8_t>& initialization_segment() const {
@@ -313,12 +349,13 @@ class Fmp4Channel {
       codec_context_->rc_buffer_size = codec_context_->bit_rate / kPreviewFps * 4;
       codec_context_->gop_size = kPreviewFps;
       codec_context_->max_b_frames = 0;
-      codec_context_->profile = FF_PROFILE_H264_HIGH;
+      const bool hevc = codec->id == AV_CODEC_ID_HEVC;
+      codec_context_->profile = hevc ? FF_PROFILE_HEVC_MAIN : FF_PROFILE_H264_HIGH;
       // Let the encoder choose a valid level for the actual resolution and rate.
-      // Level 4.2 cannot encode 2048x1536 (12,288 macroblocks > its 8,704 limit).
+      // H.264 level 4.2 cannot encode 2048x1536 (12,288 macroblocks > its 8,704 limit).
       codec_context_->thread_count = 1;
       codec_context_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-      if (std::string(name) == "h264_nvenc") {
+      if (hevc) {
         set_encoder_option("preset", "p1");
         set_encoder_option("tune", "ull");
         set_encoder_option("rc", "cbr");
@@ -330,7 +367,7 @@ class Fmp4Channel {
         set_encoder_option("tune", "zerolatency");
         set_encoder_option("x264-params", "scenecut=0:force-cfr=0:cabac=1:8x8dct=1");
       }
-      set_encoder_option("profile", "high");
+      set_encoder_option("profile", hevc ? "main" : "high");
       const int result = avcodec_open2(codec_context_, codec, nullptr);
       if (result < 0) {
         encoder_error = std::string("Could not open encoder ") + name + ": " + ffmpeg_error(result);
@@ -339,14 +376,12 @@ class Fmp4Channel {
         return false;
       }
       active_encoder_ = name;
-      active_codec_ = h264_browser_codec(codec_context_);
-      spdlog::info("Camera {}: {}x{}, {}, {}, preview limit {} Hz", camera_id_,
-                   width_, height_, name, active_codec_, kPreviewFps);
+      if (!hevc) active_codec_ = h264_browser_codec(codec_context_);
       return true;
     };
     bool opened = false;
-    if (requested_encoder_ == "auto" || requested_encoder_ == "h264_nvenc") {
-      opened = open_encoder("h264_nvenc");
+    if (requested_encoder_ == "auto" || requested_encoder_ == "hevc_nvenc") {
+      opened = open_encoder("hevc_nvenc");
     }
     if (!opened && (requested_encoder_ == "auto" || requested_encoder_ == "libx264")) {
       opened = open_encoder("libx264");
@@ -382,7 +417,9 @@ class Fmp4Channel {
     stream_->time_base = codec_context_->time_base;
     check_ffmpeg(avcodec_parameters_from_context(stream_->codecpar,
                                                  codec_context_),
-                 "Could not copy H.264 stream parameters");
+                 "Could not copy video stream parameters");
+    if (codec_context_->codec_id == AV_CODEC_ID_HEVC)
+      stream_->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
 
     constexpr int kAvioBufferSize = 64 * 1024;
     auto* avio_buffer = static_cast<unsigned char*>(av_malloc(kAvioBufferSize));
@@ -408,6 +445,10 @@ class Fmp4Channel {
     if (initialization_segment_.empty()) {
       throw std::runtime_error("MP4 muxer produced an empty initialization segment");
     }
+    if (codec_context_->codec_id == AV_CODEC_ID_HEVC)
+      active_codec_ = hevc_browser_codec(initialization_segment_);
+    spdlog::info("Camera {}: {}x{}, {}, {}, preview limit {} Hz", camera_id_,
+                 width_, height_, active_encoder_, active_codec_, kPreviewFps);
   }
 
   void encode_loop() {
@@ -947,11 +988,11 @@ class RosSpinner {
   std::thread thread_;
 };
 
-// Exercise the real RGB -> H.264 -> fragmented MP4 path without ROS discovery,
+// Exercise the real RGB -> encoded video -> fragmented MP4 path without ROS discovery,
 // physical cameras, disk output or HTTP clients. Encoder enumeration is not enough.
 int check_encoder(const std::string& encoder, int width, int height, int count) {
-  if (encoder != "h264_nvenc" && encoder != "libx264" && encoder != "auto")
-    throw std::runtime_error("Encoder must be h264_nvenc, libx264 or auto");
+  if (encoder != "hevc_nvenc" && encoder != "libx264" && encoder != "auto")
+    throw std::runtime_error("Encoder must be hevc_nvenc, libx264 or auto");
   if (width < 2 || width > 8192 || height < 2 || height > 8192 || (width & 1) || (height & 1) || count < 1 || count > 32)
     throw std::runtime_error("Probe dimensions must be even, 2..8192; channels must be 1..32");
   std::vector<std::unique_ptr<Fmp4Channel>> channels;
@@ -986,7 +1027,7 @@ int check_encoder(const std::string& encoder, int width, int height, int count) 
       return 0;
     }
   }
-  throw std::runtime_error("Encoder check timed out without producing H.264 video");
+  throw std::runtime_error("Encoder check timed out without producing video");
 }
 
 }  // namespace
@@ -996,16 +1037,16 @@ int main(int argc, char** argv) {
   av_log_set_level(AV_LOG_WARNING);
   if (argc > 1 && std::string(argv[1]) == "--help") {
     std::cout << "Usage: camera_tab_ros2_web_streamer [calibration.json] [port] [Mbit/s per camera]\n"
-                 "       camera_tab_ros2_web_streamer --check-encoder [h264_nvenc|libx264|auto] [width height channels]\n"
+                 "       camera_tab_ros2_web_streamer --check-encoder [hevc_nvenc|libx264|auto] [width height channels]\n"
                  "Environment: CAMERA_CALIBRATION_FILE, ROS_IMAGE_TOPIC_TEMPLATE, "
-                 "STREAMER_PORT, STREAMER_BITRATE_MBIT, STREAMER_ENCODER=auto|libx264|h264_nvenc\n"
+                 "STREAMER_PORT, STREAMER_BITRATE_MBIT, STREAMER_ENCODER=auto|libx264|hevc_nvenc\n"
                  "Input: sensor_msgs/msg/Image rgb8; output limit: 30 Hz.\n";
     return 0;
   }
   if (argc > 1 && std::string(argv[1]) == "--check-encoder") {
     try {
       if (argc != 2 && argc != 3 && argc != 6) throw std::runtime_error("Invalid arguments; see --help");
-      return check_encoder(argc >= 3 ? argv[2] : "h264_nvenc", argc == 6 ? std::stoi(argv[3]) : 1280,
+      return check_encoder(argc >= 3 ? argv[2] : "hevc_nvenc", argc == 6 ? std::stoi(argv[3]) : 1280,
                            argc == 6 ? std::stoi(argv[4]) : 720, argc == 6 ? std::stoi(argv[5]) : 1);
     } catch (const std::exception& error) {
       spdlog::error("{}", error.what());
@@ -1026,7 +1067,7 @@ int main(int argc, char** argv) {
     const int bitrate_mbit = std::stoi(argc > 3 ? argv[3] : env_or("STREAMER_BITRATE_MBIT", "4"));
     const auto encoder = env_or("STREAMER_ENCODER", "auto");
     if (port < 1 || port > 65535 || bitrate_mbit < 1 || bitrate_mbit > 1000 ||
-        (encoder != "auto" && encoder != "h264_nvenc" && encoder != "libx264")) {
+        (encoder != "auto" && encoder != "hevc_nvenc" && encoder != "libx264")) {
       throw std::runtime_error("Invalid port, bitrate or encoder; see --help");
     }
     spdlog::info("Requested preview encoder: {}", encoder);

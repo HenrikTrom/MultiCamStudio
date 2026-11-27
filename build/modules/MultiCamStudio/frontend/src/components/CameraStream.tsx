@@ -87,7 +87,8 @@ export default function CameraStream({
     if (!enabled) return;
     const mime = `video/mp4; codecs="${camera.codec}"`;
     if (!window.MediaSource || !MediaSource.isTypeSupported(mime)) {
-      onStatus("This browser cannot play H.264 previews. Try Chrome or Edge.", true);
+      const codec = camera.codec.startsWith("hvc1") ? "HEVC/H.265" : "H.264";
+      onStatus(`This browser/device cannot play ${codec} previews.`, true);
       return;
     }
     const controller = new AbortController();

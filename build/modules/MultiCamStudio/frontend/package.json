@@ -9,7 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node server/server.mjs",
-    "test": "node --test tests/server.test.mjs tests/workflows.test.mjs"
+    "test": "node --test tests/server.test.mjs tests/workflows.test.mjs tests/timestamps.test.mjs"
   },
   "dependencies": {
     "ajv": "^8.17.1",

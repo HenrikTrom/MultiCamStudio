@@ -1,12 +1,15 @@
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { timestampName } from './timestamps.mjs';
 import { createReadStream } from 'node:fs';
-import { access, copyFile, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, relative, resolve, sep, join, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 
 const binaryRoot = '/opt/mcs/ros2/lib/ros2_multicam_interface';
 const delay = (ms) => new Promise((done) => setTimeout(done, ms));
+const execute = promisify(execFile);
 const exists = (path) => access(path).then(() => true, () => false);
 const json = (response, status, value) => {
   response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -25,6 +28,34 @@ async function atomicJson(path, value) {
   const temporary = path + '.' + randomUUID() + '.tmp';
   await writeFile(temporary, JSON.stringify(value, null, 2) + '\n');
   await rename(temporary, path);
+}
+
+async function pngCapture(capture, serials) {
+  const manifest = JSON.parse(await readFile(join(capture, 'session.json'), 'utf8'));
+  if (manifest.status !== 'complete' || manifest.capture_format !== 'png' || !manifest.calibration_capture ||
+      !Number.isInteger(manifest.frames) || manifest.frames < 3 || manifest.frames > 999 ||
+      !Number.isInteger(manifest.width) || manifest.width < 1 || !Number.isInteger(manifest.height) || manifest.height < 1)
+    throw new Error('Calibration requires at least three complete synchronized PNG image sets');
+  const images = join(capture, 'images');
+  const names = new Set((await readdir(images, { withFileTypes: true }))
+    .filter((entry) => entry.isFile()).map((entry) => entry.name));
+  for (let frame = 1; frame <= manifest.frames; frame++) {
+    for (const serial of serials) {
+      const name = `cam${serial}-${String(frame).padStart(4, '0')}.png`;
+      if (!names.has(name)) throw new Error('Missing synchronized calibration PNG: ' + name);
+      await pngFile(join(images, name));
+    }
+  }
+  return { manifest, images };
+}
+async function pngFile(path) {
+  const file = await open(path, 'r');
+  try {
+    const buffer = Buffer.alloc(8);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    if (bytesRead !== 8 || !buffer.equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
+      throw new Error('Invalid calibration PNG: ' + basename(path));
+  } finally { await file.close(); }
 }
 function settingsValid(config, calibration = false) {
   const ids = config.serial_numbers;
@@ -51,12 +82,13 @@ function settingsValid(config, calibration = false) {
 export function createWorkflows(options) {
   const configPath = options.config;
   const dataRoot = resolve(options.dataRoot ?? process.env.CALIBRATION_DATA ?? '/home/docker/workspace/data');
-  const recorderExecutable = options.recorderExecutable ?? process.env.ROS_RECORDER_EXECUTABLE ?? `${binaryRoot}/recording_tab_ros2_image_recorder`;
+  const bagRecorder = options.bagRecorder ?? process.env.ROS_BAG_RECORDER_SCRIPT ?? `${binaryRoot}/record_rosbag.py`;
   const captureExecutable = options.captureExecutable ?? process.env.ROS_CALIBRATION_RECORDER_EXECUTABLE ?? `${binaryRoot}/calibration_tab_ros2_image_recorder`;
   const calibratorExecutable = options.calibratorExecutable ?? '/opt/mcs/calibration/bin/Multi_Camera_Calibration';
   const python = options.python ?? process.env.MCS_PYTHON_EXECUTABLE ?? '/opt/mcs/python/bin/python3';
   const validator = options.validator ?? process.env.ROS_CALIBRATION_CHECK_SCRIPT ?? `${binaryRoot}/check_calibration.py`;
   let active = null;
+  let closing = false;
   let recorder = null;
   let recorderStarting = false;
   let recordCancelled = false;
@@ -66,6 +98,14 @@ export function createWorkflows(options) {
   let recorderError = '';
   let recorderProgress = null;
   let stoppingRecorder = null;
+  let frameProcess = null;
+  let frameStarting = false;
+  let frameSession = null;
+  let frameError = '';
+  let topicCache = null;
+  let topicQuery = null;
+  let topicCacheAt = 0;
+  const now = () => options.now ? options.now() : new Date();
   const recorderLogs = [];
   let nextLog = 1;
   let pipeline = null;
@@ -124,7 +164,8 @@ export function createWorkflows(options) {
     return files.sort((a, b) => b.time - a.time)[0]?.path ?? null;
   }
   function launch(executable, args, environment, logs, onEvent = () => {}) {
-    const child = spawn(executable, args, { env: { ...process.env, ...environment }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(executable, args, { env: { ...process.env, ...environment },
+      detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
     let error = '';
     for (const stream of ['stdout', 'stderr']) createInterface({ input: child[stream] }).on('line', (line) => {
       let event = null;
@@ -133,9 +174,11 @@ export function createWorkflows(options) {
       }
       if (event?.event) {
         if (event.error) error = event.error;
-        const message = event.event === 'ready' ? `Synchronized capture ready: ${event.cameras} cameras, ${event.width} × ${event.height}` :
-          event.event === 'progress' ? `Saved ${event.frames} aligned frame sets` :
-          event.event === 'complete' ? `Capture ${event.status}: ${event.frames} aligned frame sets${event.error ? ' — ' + event.error : ''}` : event.error || line;
+        const message = event.event === 'ready' ? (event.capture_format === 'rosbag2' ?
+          `ROS bag recording: ${event.topics.length} selected topics` : `Synchronized capture ready: ${event.cameras} cameras, ${event.width} × ${event.height}`) :
+          event.event === 'progress' ? (event.bytes_written !== undefined ? `${event.bytes_written} bag bytes written` : `Saved ${event.frames} aligned frame sets`) :
+          event.event === 'complete' ? (event.capture_format === 'rosbag2' ? `ROS bag finalized: ${event.message_count} messages` :
+            `Capture ${event.status}: ${event.frames} aligned frame sets${event.error ? ' — ' + event.error : ''}`) : event.error || line;
         append(logs, event.error ? 'stderr' : stream, message);
         onEvent(event);
       } else append(logs, stream, line);
@@ -148,48 +191,72 @@ export function createWorkflows(options) {
   }
   async function terminate(process) {
     if (!process || process.child.exitCode !== null || process.child.signalCode !== null) return;
-    const timer = setTimeout(() => process.child.kill('SIGKILL'), 10000);
+    const timer = setTimeout(() => {
+      try {
+        if (globalThis.process.platform !== 'win32') globalThis.process.kill(-process.child.pid, 'SIGKILL');
+        else process.child.kill('SIGKILL');
+      } catch { /* The process group already exited. */ }
+    }, 25000);
     process.child.kill('SIGTERM');
     try { await process.done; } finally { clearTimeout(timer); }
   }
   const recordState = (after = 0) => ({ recording: Boolean(recorder || recorderStarting || stoppingRecorder),
-    mode: recorder || recorderStarting ? 'camera' : null, ready: recorderReady,
-    startedAt: recorderStartedAt, session: recorderSession, error: recorderError,
+    ready: recorderReady, startedAt: recorderStartedAt, session: recorderSession, error: recorderError,
     progress: recorderProgress, calibrationRunning: calibration.running,
+    frameCapturing: Boolean(frameProcess || frameStarting), frameSession, frameError,
     logs: recorderLogs.filter((entry) => entry.id > after) });
+
+  function cameraTopics(config) {
+    const template = process.env.ROS_IMAGE_TOPIC_TEMPLATE || '/grasshopper/camera_{serial}/image_raw';
+    if (template.split('{serial}').length !== 2) throw new Error('ROS_IMAGE_TOPIC_TEMPLATE must contain exactly one {serial}');
+    return config.serial_numbers.map((serial) => ({ serial, topic: template.replace('{serial}', serial) }));
+  }
+  async function discoveredTopics() {
+    if (topicCache && Date.now() - topicCacheAt < 5000) return topicCache;
+    if (!topicQuery) topicQuery = (async () => {
+      const topics = options.topicDiscovery ? await options.topicDiscovery() :
+        JSON.parse((await execute(python, [bagRecorder, '--list-topics'], { timeout: 7000, maxBuffer: 1024 * 1024 })).stdout).topics;
+      if (!Array.isArray(topics)) throw new Error('Invalid ROS topic discovery response');
+      topicCache = topics; topicCacheAt = Date.now(); return topics;
+    })().finally(() => { topicQuery = null; });
+    return topicQuery;
+  }
+  async function recordingPath(directory, prefix = '') {
+    const saveDirectory = await writableDirectory(directory || join(dataRoot, 'recordings'));
+    const name = prefix + timestampName(now());
+    const outputDirectory = join(saveDirectory, name);
+    if (await exists(outputDirectory)) throw new Error('A recording with this timestamp already exists; wait for the next second');
+    return { name, saveDirectory, outputDirectory };
+  }
   async function startRecording(request) {
+    if (closing) throw new Error('MCS is shutting down');
     if (active) throw new Error('Stop the current recording or calibration first');
     active = 'recording'; recorderStarting = true; recordCancelled = false; recorderError = ''; recorderReady = false;
     recorderLogs.length = 0; recorderProgress = null;
     try {
       const values = await body(request);
-      if (values.mode && values.mode !== 'camera') throw new Error('Only ROS camera recording is available');
-      if (typeof values.name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(values.name)) throw new Error('Use a session name containing letters, numbers, dots, underscores or hyphens');
+      if (values.name && values.name !== timestampName(now())) throw new Error('Recording names use the current YYYY-MM-DD-HH-mm-ss timestamp');
       const config = await readConfig();
-      const saveDirectory = await writableDirectory(values.saveDirectory || join(dataRoot, 'recordings'));
-      const outputDirectory = join(saveDirectory, values.name);
-      if (await exists(outputDirectory)) throw new Error('Session already exists; choose a new session name');
-      const fps = Number(values.fps ?? process.env.RECORD_FPS ?? 30);
-      if (!Number.isInteger(fps) || fps < 1 || fps > 240) throw new Error('Recording frequency must be an integer from 1 to 240 Hz');
-      recorderSession = { name: values.name, saveDirectory, outputDirectory };
-      // Freeze settings for the session without modifying the mounted configuration.
-      const settingsDirectory = await writableDirectory(join(dataRoot, '.session-settings'));
-      const snapshot = join(settingsDirectory, randomUUID() + '.json');
-      await atomicJson(snapshot, config);
+      const topics = values.topics ?? cameraTopics(config).map((camera) => camera.topic);
+      if (!Array.isArray(topics) || !topics.length || topics.length > 256 || topics.some((topic) =>
+        typeof topic !== 'string' || topic.length > 255 || !/^\/[A-Za-z_][A-Za-z0-9_]*(\/[A-Za-z_][A-Za-z0-9_]*)*$/.test(topic)))
+        throw new Error('Select at least one valid ROS topic');
+      recorderSession = { ...await recordingPath(values.saveDirectory), topics: [...new Set(topics)] };
       let readyResolve, readyReject;
       const ready = new Promise((resolveReady, rejectReady) => { readyResolve = resolveReady; readyReject = rejectReady; });
       if (recordCancelled) throw new Error('Recording cancelled');
-      const current = launch(recorderExecutable, [snapshot, outputDirectory], { RECORD_FPS: String(fps) }, recorderLogs, (event) => {
+      const current = launch(python, [bagRecorder, '--output', recorderSession.outputDirectory,
+        '--topics', ...recorderSession.topics], {}, recorderLogs, (event) => {
         if (event.event === 'ready') { recorderReady = true; recorderStartedAt = Date.now(); readyResolve(); }
         if (event.event === 'progress' || event.event === 'complete') recorderProgress = event;
       });
       recorder = current;
       current.done.then((result) => {
         if (recorder === current) { recorder = null; recorderReady = false; recorderStartedAt = null; active = null; }
-        if (result.code !== 0) recorderError = result.error || 'Recording failed; see recorder output';
+        if (result.code !== 0) recorderError = result.error || 'ROS bag recording failed; see recorder output';
         readyReject(new Error(recorderError || 'Recorder exited before it was ready'));
       });
-      const timeout = setTimeout(() => readyReject(new Error('Timed out preparing the recorder; check camera timestamps and resolution')),
+      const timeout = setTimeout(() => readyReject(new Error('Timed out starting ROS bag recording; see recorder output')),
         (Number(process.env.RECORD_START_TIMEOUT_SEC || 15) + 3) * 1000);
       try { await ready; } catch (error) { await terminate(current); throw error; }
       finally { clearTimeout(timeout); }
@@ -205,6 +272,33 @@ export function createWorkflows(options) {
     if (stoppingRecorder) return stoppingRecorder;
     stoppingRecorder = (async () => { recorderReady = false; await terminate(recorder); })().finally(() => { stoppingRecorder = null; });
     return stoppingRecorder;
+  }
+  async function recordFrame(request) {
+    if (closing) throw new Error('MCS is shutting down');
+    if (active === 'calibration' || frameProcess || frameStarting) throw new Error('A frame capture or calibration is already running');
+    frameStarting = true; frameError = '';
+    let snapshot;
+    try {
+      const values = await body(request);
+      const config = await readConfig();
+      const session = await recordingPath(values.saveDirectory, 'frame_');
+      const settingsDirectory = await writableDirectory(join(dataRoot, '.session-settings'));
+      snapshot = join(settingsDirectory, randomUUID() + '.json');
+      await atomicJson(snapshot, config);
+      if (closing) throw new Error('MCS is shutting down');
+      const current = launch(captureExecutable, ['--frame', snapshot, session.outputDirectory], {}, recorderLogs);
+      frameProcess = current;
+      const result = await current.done;
+      if (result.code !== 0) throw new Error(result.error || 'Synchronized frame capture failed');
+      const manifest = JSON.parse(await readFile(join(session.outputDirectory, 'session.json'), 'utf8'));
+      if (manifest.status !== 'complete' || manifest.capture_format !== 'png' || manifest.frames !== 1)
+        throw new Error('No complete synchronized frame set was saved');
+      for (const serial of config.serial_numbers) await pngFile(join(session.outputDirectory, `cam${serial}.png`));
+      frameSession = { ...session, width: manifest.width, height: manifest.height };
+      append(recorderLogs, 'stdout', 'Synchronized PNG frame saved in ' + session.outputDirectory);
+      return frameSession;
+    } catch (error) { frameError = error.message; throw error; }
+    finally { frameProcess = null; frameStarting = false; if (snapshot) await unlink(snapshot).catch(() => {}); }
   }
   async function persistLatest(result) {
     await atomicJson(pointer, { calibration: latestCalibration, preview: previewPath, result });
@@ -226,7 +320,8 @@ export function createWorkflows(options) {
   }
   async function startCalibration(quick) {
     await initialized;
-    if (active) throw new Error('Stop the current recording or calibration first');
+    if (closing) throw new Error('MCS is shutting down');
+    if (active || frameProcess || frameStarting) throw new Error('Stop the current recording or frame capture first');
     active = 'calibration'; cancelled = false;
     calibration = { running: true, stages: { capture: 'pending', calibrate: 'pending', validate: 'pending' },
       sessionDirectory: null, result: null, logs: [] };
@@ -238,7 +333,8 @@ export function createWorkflows(options) {
         settingsValid(config, true);
         const publishDirectory = await writableDirectory(config.savedir || join(dataRoot, 'logs'));
         const root = await writableDirectory(join(dataRoot, 'calibration'));
-        const session = join(root, new Date().toISOString().replace(/[:.]/g, '-') + '-' + randomUUID().slice(0, 8));
+        const session = join(root, timestampName(now()));
+        if (await exists(session)) throw new Error('A calibration attempt for this second already exists; wait for the next second');
         await mkdir(session);
         calibration.sessionDirectory = session;
         const logDirectory = join(session, 'logs'); await mkdir(logDirectory);
@@ -252,10 +348,12 @@ export function createWorkflows(options) {
         } else {
           const capture = join(session, 'capture');
           await stage('capture', captureExecutable, [snapshot, capture]);
-          const manifest = JSON.parse(await readFile(join(capture, 'session.json'), 'utf8'));
-          if (manifest.status !== 'complete' || manifest.frames < 3 || !manifest.width || !manifest.height)
-            { calibration.stages.capture = 'error'; throw new Error('Calibration requires at least three complete synchronized image sets'); }
-          await stage('calibrate', calibratorExecutable, [join(capture, 'images'), snapshot]);
+          let captured;
+          try { captured = await pngCapture(capture, config.serial_numbers); }
+          catch (error) { calibration.stages.capture = 'error'; throw error; }
+          const { manifest, images } = captured;
+          append(calibration.logs, 'stdout', `Captured ${manifest.frames} synchronized PNG sets in ${images}`);
+          await stage('calibrate', calibratorExecutable, [images, snapshot]);
           candidate = join(logDirectory, `Calibration${manifest.width}x${manifest.height}.json`);
           // The unmodified native tool can return zero after a solver failure.
           try {
@@ -313,7 +411,7 @@ export function createWorkflows(options) {
     else createReadStream(path).on('error', () => response.destroy()).pipe(response);
   }
   return {
-    close: async () => { await Promise.all([stopRecording(), cancelCalibration()]); },
+    close: async () => { closing = true; await Promise.all([stopRecording(), cancelCalibration(), terminate(frameProcess)]); },
     handle: async (request, response, path, url) => {
       if (!path.startsWith('/local-api/recorder/') && !path.startsWith('/local-api/calibration/')) return false;
       await initialized;
@@ -321,13 +419,20 @@ export function createWorkflows(options) {
         if (path === '/local-api/recorder/config' && request.method === 'GET') {
           const config = await readConfig();
           const snapshot = await options.cameraMetadata().catch(() => ({ cameras: [] }));
-          const cameras = config.serial_numbers.map((serial) => {
+          let topicsError = '';
+          const graph = await discoveredTopics().catch((error) => { topicsError = error.message; return []; });
+          const cameras = cameraTopics(config).map(({ serial, topic }) => {
             const camera = snapshot.cameras.find((entry) => entry.id === serial);
-            return { serial, topic: camera?.topic ?? '', online: camera?.online ?? false,
+            return { serial, topic, online: camera?.online ?? false,
               width: camera?.width ?? 0, height: camera?.height ?? 0, inputFps: camera?.input_fps ?? 0 };
           });
+          const topics = new Map(graph.map((entry) => [entry.name, { ...entry, camera: false, available: true }]));
+          for (const camera of cameras) topics.set(camera.topic, { name: camera.topic,
+            types: topics.get(camera.topic)?.types ?? ['sensor_msgs/msg/Image'], camera: true,
+            available: topics.has(camera.topic) });
           json(response, 200, { saveDirectory: join(dataRoot, 'recordings'), cameras,
-            fps: Number(process.env.RECORD_FPS || 30), width: cameras[0]?.width ?? 0, height: cameras[0]?.height ?? 0,
+            topics: [...topics.values()].sort((a, b) => a.name.localeCompare(b.name)), topicsError,
+            timestamp: timestampName(now()), timeZone: process.env.TZ || 'Europe/Berlin',
             syncToleranceMs: Number(process.env.RECORD_SYNC_TOLERANCE_MS || 5) });
         } else if (path === '/local-api/recorder/status' && request.method === 'GET') {
           json(response, 200, recordState(Number(url.searchParams.get('after') || 0)));
@@ -335,6 +440,8 @@ export function createWorkflows(options) {
           json(response, 200, await startRecording(request));
         } else if (path === '/local-api/recorder/stop' && request.method === 'POST') {
           await stopRecording(); json(response, 200, recordState());
+        } else if (path === '/local-api/recorder/frame' && request.method === 'POST') {
+          json(response, 200, await recordFrame(request));
         } else if (path === '/local-api/calibration/status' && request.method === 'GET') {
           json(response, 200, { ...calibration, logs: calibration.logs.filter((entry) => entry.id > Number(url.searchParams.get('after') || 0)) });
         } else if ((path === '/local-api/calibration/run' || path === '/local-api/calibration/validate') && request.method === 'POST') {

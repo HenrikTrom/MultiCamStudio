@@ -15,6 +15,7 @@ SHELL ["/bin/bash", "-c"]
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       libavcodec60 libavformat60 libavutil58 libswscale7 libspdlog1.12 \
       ros-${ROS_DISTRO}-sensor-msgs ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+      ros-${ROS_DISTRO}-rosbag2 ros-${ROS_DISTRO}-rosbag2-storage-mcap \
       curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -114,7 +115,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
       libavcodec60 libavformat60 libavutil58 libswscale7 libspdlog1.12 \
       libpng16-16t64 libjpeg-turbo8 python3-numpy \
       ros-${ROS_DISTRO}-rclcpp ros-${ROS_DISTRO}-rclpy ros-${ROS_DISTRO}-sensor-msgs \
-      ros-${ROS_DISTRO}-rmw-fastrtps-cpp ros-${ROS_DISTRO}-rmw-cyclonedds-cpp curl \
+      ros-${ROS_DISTRO}-rmw-fastrtps-cpp ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+      ros-${ROS_DISTRO}-rosbag2 ros-${ROS_DISTRO}-rosbag2-storage-mcap curl \
     && rm -rf /var/lib/apt/lists/*
 
 FROM production-base AS runtime

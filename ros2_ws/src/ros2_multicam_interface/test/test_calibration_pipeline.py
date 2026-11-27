@@ -13,6 +13,7 @@ import urllib.request
 import cv2
 import numpy as np
 import rclpy
+import rosbag2_py
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
@@ -84,7 +85,8 @@ def main():
             'CALIBRATION_CAPTURE_FRAMES': '18', 'CALIBRATION_CAPTURE_INTERVAL_MS': '200',
             'RECORD_SYNC_TOLERANCE_MS': '3', 'RECORD_START_TIMEOUT_SEC': '10'}
         with (root / 'server.log').open('w+') as log:
-            process = subprocess.Popen(['node', '/opt/mcs/web/server/server.mjs'], env=environment, stdout=log, stderr=log)
+            process = subprocess.Popen(['node', os.environ.get('MCS_SERVER_SCRIPT', '/opt/mcs/web/server/server.mjs')],
+                                       env=environment, stdout=log, stderr=log)
             worker.start()
             def call(path, values=None):
                 request = urllib.request.Request('http://127.0.0.1:15173' + path,
@@ -115,6 +117,11 @@ def main():
                 assert state['result']['success'], state
                 assert all(value == 'success' for value in state['stages'].values()), state
                 assert state['result']['report']['mean_reprojection_error_px'] < 5, state
+                capture = Path(state['sessionDirectory']) / 'capture'
+                manifest = json.loads((capture / 'session.json').read_text())
+                assert manifest['capture_format'] == 'png' and manifest['frames'] == 18, manifest
+                assert len(list((capture / 'images').glob('*.png'))) == 18 * len(ids)
+                assert not list(capture.rglob('*.mp4'))
                 published = data / 'logs/Calibration640x480.json'
                 original = published.read_bytes()
                 assert json.loads(original)['image_width'] == 640
@@ -124,6 +131,7 @@ def main():
                 assert quick['result']['success'], quick
                 assert quick['stages']['capture'] == quick['stages']['calibrate'] == 'pending'
                 print('PASS: quick ROS calibration validation', flush=True)
+                time.sleep(1.1)
                 wrong_resolution.set()
                 time.sleep(0.2)
                 call('/local-api/calibration/run', {})
@@ -134,20 +142,24 @@ def main():
                 print('PASS: mismatched resolution blocked before calibration; published result preserved', flush=True)
                 wrong_resolution.clear()
                 time.sleep(0.2)
-                call('/local-api/recorder/start', {'name': 'record-e2e', 'fps': 30})
-                time.sleep(0.5)
-                call('/local-api/recorder/stop', {})
-                output = data / 'recordings/record-e2e'
-                manifest = json.loads((output / 'session.json').read_text())
-                assert manifest['status'] == 'complete' and manifest['frames'] > 3, manifest
-                counts = []
+                bag_state = call('/local-api/recorder/start', {'topics': [prefix + sn for sn in ids]})
+                output = Path(bag_state['session']['outputDirectory'])
+                frame = call('/local-api/recorder/frame', {})
+                frame_directory = Path(frame['outputDirectory'])
+                assert frame_directory.name.startswith('frame_')
                 for sn in ids:
-                    video = cv2.VideoCapture(str(output / (sn + '.mp4')))
-                    count = 0
-                    while video.read()[0]: count += 1
-                    counts.append(count); video.release()
-                assert counts == [manifest['frames']] * 2, (counts, manifest)
-                print('PASS: HTTP recording lifecycle and finalized, aligned MP4s', counts, flush=True)
+                    assert cv2.imread(str(frame_directory / f'cam{sn}.png')).shape == (480, 640, 3)
+                frame_times = [json.loads(line) for line in (frame_directory / 'frame_timestamps.jsonl').read_text().splitlines()]
+                assert len(frame_times) == 1 and frame_times[0]['skew_ns'] == 1_000_000
+                assert call('/local-api/recorder/status')['recording']
+                call('/local-api/recorder/stop', {})
+                manifest = json.loads((output / 'session.json').read_text())
+                assert manifest['status'] == 'complete' and manifest['message_count'] > 3, manifest
+                assert (output / 'metadata.yaml').is_file() and not list(output.glob('*.mp4'))
+                bag = rosbag2_py.SequentialReader()
+                bag.open(rosbag2_py.StorageOptions(uri=str(output), storage_id='mcap'), rosbag2_py.ConverterOptions('', ''))
+                assert {topic.name for topic in bag.get_all_topics_and_types()} == {prefix + sn for sn in ids}
+                print('PASS: HTTP ROS bag recording and simultaneous synchronized PNG frame capture', flush=True)
             except BaseException:
                 log.flush(); log.seek(0)
                 print(log.read(), flush=True)

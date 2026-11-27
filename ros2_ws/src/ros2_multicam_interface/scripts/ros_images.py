@@ -34,9 +34,9 @@ def capture_synchronized(settings, timeout=15.0, tolerance_ms=5.0):
         nonlocal dimensions
         sn = ids[index]
         if (message.encoding != "rgb8" or message.width <= 0 or message.height <= 0
-                or message.width % 2 or message.height % 2 or message.step < message.width * 3
+                or message.step < message.width * 3
                 or len(message.data) < message.step * message.height):
-            errors.append(f"Camera {sn}: expected complete rgb8 images with positive even dimensions")
+            errors.append(f"Camera {sn}: expected complete rgb8 images with positive dimensions")
             return
         size = (message.width, message.height)
         if dimensions is None:

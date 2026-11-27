@@ -1,7 +1,7 @@
 # MultiCam Control Studio ROS2: installation and everyday use
 
 MCS subscribes to ROS 2 Jazzy camera publishers. It provides a browser interface
-for checking images, recording synchronized videos, and calibrating the camera
+for checking images, recording ROS bags and synchronized PNGs, and calibrating the camera
 setup. Camera acquisition, exposure settings, triggers, and hardware clock
 synchronization are managed by your publishers.
 
@@ -88,23 +88,28 @@ framing, lighting, and focus.
 
 ## Record a session
 
-1. Check that all intended camera topics are online and have the same resolution.
-2. Open Record, choose a new session name, a save directory inside the data mount,
-   and the desired recording frequency.
-3. Select Start recording. Recording starts after a matched image set arrives.
-4. Select Stop recording and wait for finalization before shutting down the host.
+1. Open Record and choose a recordings directory inside the data mount.
+2. Select topics in the checkbox menu. Configured camera topics are checked by
+   default; other discovered ROS topics can also be recorded.
+3. Select **Start ROS bag**. Selected messages are saved at their published rates,
+   with their original payloads and header timestamps, in MCAP format.
+4. Select **Stop recording** and wait for the bag metadata to finalize.
 
-The default host output is `data/recordings/<session>/`: one MP4 per camera,
-`frame_timestamps.jsonl`, and `session.json`. All successful recordings have
-matching frame indices and batch presentation times. The source timestamp log
-records each camera's actual time and the spread within every saved set.
+The default host output is `data/recordings/YYYY-MM-DD-HH-mm-ss/`, containing
+the `.mcap` bag, `metadata.yaml`, and `session.json`. Names use local 24-hour time
+(`TZ=Europe/Berlin` by default), including seconds. An existing same-second
+directory is never overwritten; retry in the next second.
 
-Publishers must use nonzero, increasing timestamps from a common clock. The
-recorder matches timestamps within the configured tolerance (5 ms by default);
-it does not synchronize the hardware itself. Unmatched frames are dropped rather
-than duplicated. A missing camera, resolution change, invalid image, or clock
-reset is reported as an error. Inspect the session status and frame/drop counts
-before using a recording for analysis.
+**Record frame** saves one lossless PNG per configured camera, independently of
+the topic checkboxes, in `data/recordings/frame_YYYY-MM-DD-HH-mm-ss/`. It also
+writes `frame_timestamps.jsonl` and `session.json`. Frame capture can run while
+a ROS bag is recording.
+
+For synchronized PNG capture, cameras must publish valid RGB8 images of the same
+resolution with nonzero, increasing timestamps from a common clock. The recorder
+matches headers within `RECORD_SYNC_TOLERANCE_MS` (5 ms by default); it does not
+synchronize hardware clocks. A ROS bag preserves messages as received and does
+not pair, resample, or synchronize them.
 
 ## Calibrate and validate
 
@@ -120,6 +125,31 @@ board degrades calibration accuracy.
    capture, solve, and validation stages and shows the reprojection result.
 4. Use Quick validation later to check the latest calibration without solving
    again. The 3D view and Copy calibration controls use the published result.
+
+Calibration saves the original ROS RGB8 pixel values directly into lossless PNGs
+at the source resolution. It does not record videos or extract frames with
+FFmpeg, and it does not need a GPU or a working video encoder. The PNG capture
+executable also provides Record frame and does not link FFmpeg libraries.
+Images are matched using their ROS header timestamps and the configured tolerance.
+
+Each attempt is stored under the mounted data/storage directory:
+
+```text
+data/calibration/<session>/
+  capture/
+    images/cam<serial>-0001.png  # same index is one synchronized camera set
+    images/cam<serial>-0002.png
+    frame_timestamps.jsonl
+    session.json
+  settings.json
+  logs/
+  validation/
+```
+
+The GUI checks that all expected PNGs exist before passing `capture/images`
+directly to the calibration solver. `MCS_DATA_DIR` selects the host storage root.
+Failed or cancelled captures retain earlier complete sets for inspection and do
+not publish a calibration result. Existing capture directories are never reused.
 
 Capture checks that all images share one resolution. The original
 `multi-camera-calib` code is used without modifications. A new calibration is
@@ -174,8 +204,8 @@ docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml exec multicamst
 The GPU override exposes NVIDIA's video driver libraries and explicitly selects
 `hevc_nvenc` for previews, replacing the base Compose `STREAMER_ENCODER` CPU
 default. An existing `.env` with `STREAMER_ENCODER=libx264` does not prevent GPU
-previews. Recording retains its independent `RECORD_ENCODER` setting and CPU
-default. Plain `docker compose up -d` uses CPU mode;
+previews. ROS bag and PNG recording require no video encoder.
+Plain `docker compose up -d` uses CPU mode;
 the GPU filename is not loaded automatically. Use both `-f` arguments on subsequent
 `up`/recreate commands, including after `.env` changes.
 
@@ -210,9 +240,7 @@ GPU previews fail explicitly if NVENC cannot open, rather than silently falling
 back to CPU. NVENC offloads compression; image reception and RGB
 conversion can still use CPU.
 
-Preview and recording would use separate encoder sessions per camera if recording
-is also switched to NVENC. Keep the recording CPU default when encoder-session
-capacity is needed for previews. `GPU_STREAMER_ENCODER` overrides the preview
+`GPU_STREAMER_ENCODER` overrides the preview
 choice in GPU mode. The normal Compose file continues to
 work without NVIDIA or USB device access.
 

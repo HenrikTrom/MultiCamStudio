@@ -1,6 +1,6 @@
 # MultiCam Control Studio ROS2
 
-A browser GUI for viewing ROS 2 Jazzy camera images, recording synchronized videos,
+A browser GUI for viewing ROS 2 Jazzy camera images, recording ROS bags and synchronized PNGs,
 and calibrating multi-camera setups.
 
 From a checkout with its submodules initialized:
@@ -21,9 +21,11 @@ in [cfg/CameraCalibrationSettings.json](cfg/CameraCalibrationSettings.json).
 
 - **Streamer:** live RGB8 images, actual online-topic counts, input/preview rates,
   histograms, and focus peaking. Previews are capped at 30 Hz.
-- **Record:** aligned H.264 camera videos with source timestamp logs and resolution
-  checks. Each session gets its own directory under `data/recordings`.
-- **Calibration:** synchronized image capture, the unchanged `multi-camera-calib`
+- **Record:** choose ROS topics with camera topics selected by default, then save
+  an MCAP ROS bag. **Record frame** saves one synchronized, lossless PNG per camera.
+  Outputs use timestamped directories under `data/recordings`.
+- **Calibration:** lossless synchronized ROS RGB8 images saved directly as PNGs,
+  the unchanged `multi-camera-calib`
   solver, and validation against new ROS images. Existing calibration versions are
   preserved before publishing a validated replacement.
 
@@ -37,8 +39,8 @@ docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml exec multicamst
 
 Plain `docker compose up -d` does not load the GPU override. Keep both `-f`
 arguments when recreating a GPU installation. The override selects `hevc_nvenc`
-for previews even if `.env` still contains a CPU preview default. Recording retains
-its separate `RECORD_ENCODER` setting. The check
+for previews even if `.env` still contains a CPU preview default. ROS bag and PNG
+recording preserve source images without video encoding. The check
 encodes a synthetic image; no camera publishers are required. See
 [GPU setup and troubleshooting](instructions.md#optional-gpu-encoding).
 GPU previews use HEVC/H.265 (`hvc1`) and require browser/device HEVC support;

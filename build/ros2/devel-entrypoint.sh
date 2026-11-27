@@ -9,9 +9,10 @@ colcon --log-base log/devel build \
   --packages-select ros2_multicam_interface \
   --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
 source install/devel/setup.bash
+rm -f install/devel/lib/ros2_multicam_interface/recording_tab_ros2_image_recorder
 
 export ROS_STREAMER_EXECUTABLE="$PWD/install/devel/lib/ros2_multicam_interface/camera_tab_ros2_web_streamer"
-export ROS_RECORDER_EXECUTABLE="$PWD/install/devel/lib/ros2_multicam_interface/recording_tab_ros2_image_recorder"
+export ROS_BAG_RECORDER_SCRIPT="$PWD/install/devel/lib/ros2_multicam_interface/record_rosbag.py"
 export ROS_CALIBRATION_RECORDER_EXECUTABLE="$PWD/install/devel/lib/ros2_multicam_interface/calibration_tab_ros2_image_recorder"
 export ROS_CALIBRATION_CHECK_SCRIPT="$PWD/install/devel/lib/ros2_multicam_interface/check_calibration.py"
 export MCS_API_PORT="${MCS_API_PORT:-5175}"

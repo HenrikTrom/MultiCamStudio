@@ -2,7 +2,7 @@
 <package format="3">
   <name>ros2_multicam_interface</name>
   <version>0.1.0</version>
-  <description>ROS 2 image subscriptions and low latency browser previews for MultiCamStudio.</description>
+  <description>ROS 2 browser previews, topic recording and synchronized PNG capture for MultiCamStudio.</description>
   <maintainer email="henrik.trommer@uni-goettingen.de">Henrik Trommer</maintainer>
   <license>LicenseRef-Unspecified</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
@@ -17,5 +17,8 @@
   <depend>opencv</depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>rosbag2</exec_depend>
+  <exec_depend>rosbag2_storage_mcap</exec_depend>
   <export><build_type>ament_cmake</build_type></export>
 </package>

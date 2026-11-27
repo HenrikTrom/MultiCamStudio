@@ -2,7 +2,7 @@
 
 The default container launches the MCS web GUI and the ROS 2 Jazzy image preview
 service together. The Streamer tab shows live images and topic statistics. The Record tab saves
-synchronized videos, and Calibration provides capture, solving, and live ROS
+ROS bags and synchronized PNGs, and Calibration provides capture, solving, and live ROS
 validation. `multi-camera-calib` is unchanged.
 
 ## Build and launch
@@ -114,7 +114,7 @@ previews, overriding the base configuration's CPU preview default.
 It requires Docker Compose >= 2.30, a working host NVIDIA driver, NVIDIA Container
 Toolkit, and a GPU supporting NVENC HEVC. Always keep both Compose files when
 recreating the service. Use `GPU_STREAMER_ENCODER` to override the preview choice
-in GPU mode. Recording keeps its separate `RECORD_ENCODER` setting and CPU default.
+in GPU mode. ROS bag and PNG recording require no video encoder.
 CPU throughput depends on camera count and resolution.
 
 `mcs-check-gpu` encodes synthetic 1280x720 RGB through the preview's real HEVC/fMP4
@@ -131,51 +131,54 @@ concurrent NVENC sessions. `STREAMER_EXECUTABLE` can select a freshly built bina
 
 ## Recording
 
-Choose a new session name, a directory inside the mounted data folder, and a
-recording frequency, then select **Start recording**. Default output is
-`data/recordings/<session>/` on the host. Stop recording before shutting down the
-host; Docker shutdown also sends a graceful stop and allows MP4 finalization.
+The Record tab provides a checkbox menu of discovered ROS topics. Configured
+camera topics are selected by default, including cameras not currently online.
+Choose a directory inside the mounted data folder and select **Start ROS bag**.
+The `record_rosbag.py` supervisor runs native `ros2 bag record` with the selected
+topics and MCAP storage. Image payloads and header timestamps are preserved at
+published rates; messages are not matched, resized, or video encoded.
 
-The recorder uses `sensor_msgs/Image.header.stamp` to pair images. Every camera
-must publish nonzero timestamps from a common, increasing clock. Default maximum
-spread within a saved frame set is **5 ms**, set by
-`RECORD_SYNC_TOLERANCE_MS`. This software matching does not trigger cameras or
-synchronize their exposure clocks; publishers must already provide suitable
-acquisition timestamps. Missing matches are dropped, never duplicated.
+Default output is `data/recordings/YYYY-MM-DD-HH-mm-ss/`, containing an `.mcap`
+file, rosbag2 `metadata.yaml`, and a completion `session.json` with topic names,
+message count, and start/finish times. The name uses local 24-hour time; `TZ`
+defaults to `Europe/Berlin`. Seconds prevent minute-level collisions. An existing
+same-second directory is rejected, never overwritten. Stop recording before
+shutting down the host. Stop and Docker shutdown signal the native recorder to
+flush data and finalize metadata; an interrupted or failed bag is reported as an
+error.
 
-All input images must be valid RGB8, have positive even dimensions, and share one
-resolution. A missing camera, resolution change, timestamp reset, or prolonged
-loss of synchronized sets stops the recording with an error. Videos already
-written are finalized and the session is marked failed. A session directory is
-never overwritten. Recording and calibration cannot run concurrently; previews
-can remain running during either workflow.
+**Record frame** runs the PNG recorder in one-set mode. It saves every configured
+camera, independently of the topic checkboxes, in
+`data/recordings/frame_YYYY-MM-DD-HH-mm-ss/`:
 
-Each session contains:
+- `cam<serial>.png`: original RGB8 pixel values as lossless PNGs.
+- `frame_timestamps.jsonl`: batch timestamp, each camera's original timestamp in
+  nanoseconds, and the maximum spread. Preserve 64-bit integer precision.
+- `session.json`: resolution, source cameras, synchronization statistics, and
+  completion status.
 
-- `<serial>.mp4`: one H.264 video per camera, with identical saved frame indices
-  and batch presentation timestamps. Timing gaps are retained in the MP4 times.
-- `frame_timestamps.jsonl`: one row per saved frame set, containing its batch
-  timestamp, each camera's original timestamp (nanoseconds), and maximum spread.
-  These are integer nanoseconds; consumers should preserve 64-bit precision.
-- `session.json`: camera/configuration snapshot, dimensions, selected frequency,
-  frame counts, maximum timestamp spread, unmatched/buffered frame counts, and
-  completion or failure status.
+PNG matching uses `sensor_msgs/Image.header.stamp`. Every camera must publish
+nonzero timestamps from a common, increasing clock. Maximum spread defaults to
+**5 ms** (`RECORD_SYNC_TOLERANCE_MS`). This does not trigger cameras or synchronize
+hardware clocks. Unmatched messages are dropped rather than duplicated. The
+matching queue holds at most 32 images per camera. Valid RGB8 images must have
+positive dimensions and share one resolution; padded rows and odd dimensions
+are supported. Missing cameras, invalid images, clock resets, resolution changes,
+or prolonged loss of matched sets fail the capture. `RECORD_START_TIMEOUT_SEC`
+defaults to 15 and `RECORD_STALL_TIMEOUT_SEC` to 5.
 
-`RECORD_FPS` defaults to 30 and can be changed in the GUI per session. This selects
-at most one matched set per requested timestamp interval. Slower sources are
-not duplicated; do not assume videos are constant frame rate. Each camera's
-matching queue holds at most 32 images. `RECORD_START_TIMEOUT_SEC` defaults to 15
-and `RECORD_STALL_TIMEOUT_SEC` to 5. `RECORD_ENCODER` defaults to `libx264`; selecting
-`h264_nvenc` also requires GPU exposure and available encoder sessions. Preview
-and recording encoder choices are independent. The GPU override only selects
-NVENC for previews, preserving encoder-session capacity for those previews.
+Frame capture can run while a ROS bag is recording. Calibration excludes both
+operations. Previews can remain running throughout. The former video recording
+executable and its encoder/frame-rate settings have been removed.
 
 ## Calibration workflow
 
 1. Make the rigid ChArUco board visible to every camera. Select **Run calibration**
    and move the board through varied positions and angles during capture.
-2. The ROS capture recorder checks image formats and equal resolutions, matches
-   header timestamps, and saves synchronized PNG sets. Defaults are 30 sets at
+2. The dedicated `calibration_tab_ros2_image_recorder` checks RGB8 images and equal
+   resolutions, matches header timestamps, and writes synchronized lossless PNG
+   sets directly from the topic messages. No video is recorded or unpacked, and
+   the executable has no FFmpeg/video-encoder dependency. Defaults are 30 sets at
    500 ms spacing (about 15 seconds), controlled by `CALIBRATION_CAPTURE_FRAMES`
    and `CALIBRATION_CAPTURE_INTERVAL_MS`. Use 3–999 sets.
 3. The original native `Multi_Camera_Calibration` runs on those images and a copy
@@ -191,9 +194,34 @@ NVENC for previews, preserving encoder-session capacity for those previews.
 
 Every attempt has a new `data/calibration/<session>/` directory containing its
 settings snapshot, capture images/timestamps, candidate calibration, validation
-report, and annotated images. PNG names are exactly
+report, and annotated images. Captures live in `capture/images/`. PNG names are exactly
 `cam<serial>-0001.png`, etc., as expected by the unchanged calibrator. The capture
-step is shared with the video recorder's matching and image validation code.
+executable also implements the one-shot Record frame action via `--frame`.
+PNG pixel values are preserved exactly (RGB/BGR channel ordering is adapted for
+OpenCV's writer), with no resizing, white balancing, or lossy compression. Padded
+ROS rows and odd image dimensions are supported for PNGs. A failed set is removed
+without deleting previous complete sets. `session.json` identifies `capture_format:
+"png"`, the image directory, resolution, frame count and source camera IDs.
+
+The GUI checks the capture manifest and every expected PNG before invoking
+`Multi_Camera_Calibration <capture>/images <settings-snapshot>`. Missing or invalid
+PNG files stop the capture stage; there is no FFmpeg extraction stage.
+
+For standalone capture, in a container shell with the ROS environment sourced:
+
+```sh
+/opt/mcs/ros2/lib/ros2_multicam_interface/calibration_tab_ros2_image_recorder \
+  /home/docker/workspace/cfg/CameraCalibrationSettings.json \
+  /home/docker/workspace/data/calibration/manual-capture
+```
+
+Omit the output argument to use `CALIBRATION_OUTPUT_DIR`, or a unique new directory
+under `${CALIBRATION_DATA}/calibration/` if it is unset. The capture count/interval
+use `CALIBRATION_CAPTURE_FRAMES` and `CALIBRATION_CAPTURE_INTERVAL_MS`. The older backend `record.sh`
+and `calibrate.sh` entry points now invoke ROS PNG capture and solve directly from
+its `images` directory as well. They accept an explicit capture directory or use
+`CALIBRATION_OUTPUT_DIR` (default `${CALIBRATION_DATA}/calib_images`). Use a new
+directory on every capture; no stored images or videos are deleted automatically.
 
 Successful results are atomically copied to the configuration's `savedir` as
 `Calibration<width>x<height>.json`. That directory must be inside the mounted data
@@ -230,10 +258,11 @@ The validation script can also run directly inside the container:
 | `POST /local-api/camera-stream/start` | Start preview service |
 | `POST /local-api/camera-stream/stop` | Stop preview service without stopping GUI |
 | `GET /local-api/config` | Read-only ROS and calibration configuration |
-| `GET /local-api/recorder/config` | Recording defaults and camera sources |
+| `GET /local-api/recorder/config` | Discovered topics, camera defaults, storage, timestamp/time zone |
 | `GET /local-api/recorder/status?after=<log-id>` | Recording state, progress, errors, logs |
-| `POST /local-api/recorder/start` | Start a new session: `{name, saveDirectory, fps}` |
-| `POST /local-api/recorder/stop` | Finalize and stop recording |
+| `POST /local-api/recorder/start` | Start an MCAP ROS bag: `{saveDirectory, topics}`; omitted topics default to configured cameras |
+| `POST /local-api/recorder/stop` | Finalize and stop the ROS bag |
+| `POST /local-api/recorder/frame` | Save one synchronized PNG set: `{saveDirectory}` |
 | `POST /local-api/calibration/run` | Start capture → calibration → validation |
 | `POST /local-api/calibration/validate` | Validate the latest calibration with ROS images |
 | `POST /local-api/calibration/cancel` | Cancel the current calibration attempt |
@@ -365,6 +394,10 @@ These tests use synthetic ROS publishers and temporary data directories; they
 leave physical camera control and existing calibration outputs untouched:
 
 ```sh
+docker run --rm -e ROS_DOMAIN_ID=125 \
+  -v "$PWD/ros2_ws/src/ros2_multicam_interface/test:/tests:ro" \
+  mcs-ros2:jazzy /opt/mcs/python/bin/python3 /tests/test_rosbag.py
+
 docker run --rm -e ROS_DOMAIN_ID=126 \
   -v "$PWD/ros2_ws/src/ros2_multicam_interface/test:/tests:ro" \
   mcs-ros2:jazzy /opt/mcs/python/bin/python3 /tests/test_recorder.py
@@ -380,10 +413,10 @@ docker run --rm -e ROS_DOMAIN_ID=127 \
 
 The last test exercises the actual native solver and live ROS validation end to
 end, including quick validation, resolution rejection, publication preservation,
-and HTTP recording controls. The Node test suite also covers cancellation,
+and HTTP ROS bag controls with simultaneous PNG frame capture. The Node test suite also covers cancellation,
 mutual exclusion, archival, and process failure. `tests/browser-stage3.mjs` checks
 branding, real Record controls, and Calibration controls with Chrome. It creates
-a short, uniquely named verification recording under `data/test/ros2-stage3-verification`.
+a short, timestamped verification bag and PNG frame set under `data/test/ros2-stage3-verification`.
 
 ### Production cold-start verification
 

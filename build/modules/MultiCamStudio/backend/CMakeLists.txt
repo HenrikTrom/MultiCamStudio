@@ -23,10 +23,6 @@ add_executable(fast_flir_web_streamer
   src/streamer.cpp
 )
 
-add_executable(flir_recorder
-  src/recorder.cpp
-)
-
 # If the exported target in your parent project has a namespace, replace
 # flirmulticamera below with that target (for example, flirmulticamera::flirmulticamera).
 target_link_libraries(fast_flir_web_streamer PRIVATE
@@ -39,16 +35,3 @@ target_link_libraries(fast_flir_web_streamer PRIVATE
 target_compile_options(fast_flir_web_streamer PRIVATE
   -Wall -Wextra -Wpedantic
 )
-
-target_link_libraries(flir_recorder PRIVATE
-  flirmulticamera
-  spdlog::spdlog
-  Threads::Threads
-)
-
-target_compile_options(flir_recorder PRIVATE
-  -Wall -Wextra -Wpedantic
-)
-
-add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../flir-eye-tracker-record"
-                 "${CMAKE_CURRENT_BINARY_DIR}/flir-eye-tracker-record")

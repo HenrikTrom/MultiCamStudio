@@ -29,7 +29,7 @@ def main():
     assert not Path('/workspaces/ros2_ws').exists()
     assert not Path('/opt/mcs/web/node_modules').exists()
     binaries = [Path('/opt/mcs/ros2/lib/ros2_multicam_interface') / executable for executable in
-        ['camera_tab_ros2_web_streamer', 'recording_tab_ros2_image_recorder', 'calibration_tab_ros2_image_recorder']]
+        ['camera_tab_ros2_web_streamer', 'calibration_tab_ros2_image_recorder']]
     binaries.append(Path('/opt/mcs/calibration/bin/Multi_Camera_Calibration'))
     mtimes = {path: path.stat().st_mtime_ns for path in binaries}
     subprocess.run(['/usr/local/bin/mcs-check-runtime'], check=True)
@@ -49,9 +49,9 @@ def main():
             'CAMERA_CALIBRATION_FILE': str(config), 'CALIBRATION_DATA': str(data),
             'ROS_DOMAIN_ID': '129', 'ROS_AUTOMATIC_DISCOVERY_RANGE': 'LOCALHOST',
             'STREAMER_ENCODER': 'libx264'}
-        def request(path, method='GET'):
+        def request(path, method='GET', timeout=3):
             req = urllib.request.Request(f'http://127.0.0.1:{port}{path}', method=method)
-            return urllib.request.urlopen(req, timeout=3)
+            return urllib.request.urlopen(req, timeout=timeout)
         for attempt in range(2):
             started = time.monotonic()
             with (root / f'start-{attempt}.log').open('w+') as log:
@@ -76,7 +76,7 @@ def main():
                         assert cameras['configured_cameras'] == 2
                         assert cameras['online_cameras'] == 0
                         assert all(camera['input_fps'] == camera['stream_fps'] == 0 for camera in cameras['cameras'])
-                    with request('/local-api/recorder/config') as response:
+                    with request('/local-api/recorder/config', timeout=10) as response:
                         assert len(json.load(response)['cameras']) == 2
                     with request('/local-api/camera-stream/stop', 'POST') as response:
                         assert not json.load(response)['streaming']

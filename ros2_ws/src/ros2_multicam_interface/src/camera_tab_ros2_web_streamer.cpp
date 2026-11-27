@@ -49,7 +49,27 @@ namespace {
 
 using namespace std::chrono_literals;
 
-constexpr const char* kBrowserCodec = "avc1.64002A";  // H.264 High, level 4.2
+constexpr const char* kDefaultBrowserCodec = "avc1.64002A";  // Until the first image is encoded.
+
+std::string h264_browser_codec(const AVCodecContext* context) {
+  const auto* data = context->extradata;
+  const int size = context->extradata_size;
+  const auto tag = [](std::uint8_t profile, std::uint8_t compatibility, std::uint8_t level) {
+    constexpr char hex[] = "0123456789ABCDEF";
+    std::string result = "avc1.";
+    for (const auto byte : {profile, compatibility, level}) {
+      result += hex[byte >> 4];
+      result += hex[byte & 15];
+    }
+    return result;
+  };
+  // AVCDecoderConfigurationRecord or an Annex B SPS, depending on the encoder.
+  if (size >= 4 && data[0] == 1) return tag(data[1], data[2], data[3]);
+  for (int i = 0; i + 6 < size; ++i)
+    if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 && (data[i + 3] & 31) == 7)
+      return tag(data[i + 4], data[i + 5], data[i + 6]);
+  throw std::runtime_error("H.264 encoder did not provide profile/level information");
+}
 
 // FFmpeg made the custom AVIO write buffer const in libavformat 61
 // (FFmpeg 7). Keep one source compatible with both API variants.
@@ -235,7 +255,8 @@ class Fmp4Channel {
                 std::chrono::milliseconds>(now - input_rate_.last()).count()) : Json(nullptr)},
             {"received_frames", input_rate_.total()}, {"invalid_frames", invalid_frames_},
             {"encoded_frames", output_rate_.total()},
-            {"encoder", ready_ ? active_encoder_ : ""}};
+            {"encoder", ready_ ? active_encoder_ : ""},
+            {"codec", ready_ ? active_codec_ : kDefaultBrowserCodec}};
   }
 
   const std::vector<std::uint8_t>& initialization_segment() const {
@@ -271,9 +292,14 @@ class Fmp4Channel {
   }
 
   void initialize_encoder() {
-    const auto open_encoder = [this](const char* name) {
+    std::string encoder_error;
+    const auto open_encoder = [this, &encoder_error](const char* name) {
       const AVCodec* codec = avcodec_find_encoder_by_name(name);
-      if (!codec) return false;
+      if (!codec) {
+        encoder_error = std::string("FFmpeg has no encoder named ") + name;
+        spdlog::warn("Camera {}: {}", camera_id_, encoder_error);
+        return false;
+      }
       codec_context_ = avcodec_alloc_context3(codec);
       if (!codec_context_) throw std::bad_alloc();
       codec_context_->width = width_;
@@ -288,7 +314,8 @@ class Fmp4Channel {
       codec_context_->gop_size = kPreviewFps;
       codec_context_->max_b_frames = 0;
       codec_context_->profile = FF_PROFILE_H264_HIGH;
-      codec_context_->level = 42;
+      // Let the encoder choose a valid level for the actual resolution and rate.
+      // Level 4.2 cannot encode 2048x1536 (12,288 macroblocks > its 8,704 limit).
       codec_context_->thread_count = 1;
       codec_context_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
       if (std::string(name) == "h264_nvenc") {
@@ -304,14 +331,17 @@ class Fmp4Channel {
         set_encoder_option("x264-params", "scenecut=0:force-cfr=0:cabac=1:8x8dct=1");
       }
       set_encoder_option("profile", "high");
-      set_encoder_option("level", "4.2");
-      if (avcodec_open2(codec_context_, codec, nullptr) < 0) {
+      const int result = avcodec_open2(codec_context_, codec, nullptr);
+      if (result < 0) {
+        encoder_error = std::string("Could not open encoder ") + name + ": " + ffmpeg_error(result);
+        spdlog::warn("Camera {}: {}", camera_id_, encoder_error);
         avcodec_free_context(&codec_context_);
         return false;
       }
       active_encoder_ = name;
-      spdlog::info("Camera {}: {}x{}, {}, preview limit {} Hz", camera_id_,
-                   width_, height_, name, kPreviewFps);
+      active_codec_ = h264_browser_codec(codec_context_);
+      spdlog::info("Camera {}: {}x{}, {}, {}, preview limit {} Hz", camera_id_,
+                   width_, height_, name, active_codec_, kPreviewFps);
       return true;
     };
     bool opened = false;
@@ -321,7 +351,7 @@ class Fmp4Channel {
     if (!opened && (requested_encoder_ == "auto" || requested_encoder_ == "libx264")) {
       opened = open_encoder("libx264");
     }
-    if (!opened) throw std::runtime_error("Could not open encoder " + requested_encoder_);
+    if (!opened) throw std::runtime_error(encoder_error);
 
     frame_ = av_frame_alloc();
     packet_ = av_packet_alloc();
@@ -515,6 +545,7 @@ class Fmp4Channel {
   std::vector<std::uint8_t> initialization_segment_;
   std::string requested_encoder_;
   std::string active_encoder_;
+  std::string active_codec_;
   std::string error_;
   bool ready_{false};
   bool resolution_warned_{false};
@@ -607,7 +638,7 @@ class RosCameraBank : public rclcpp::Node {
       camera["publisher_count"] = count_publishers(topics_[i]);
       camera.update({{"id", camera_ids_[i]}, {"name", "Camera " + std::to_string(i + 1)},
                      {"topic", topics_[i]}, {"stream", "/api/cameras/" + std::to_string(i) + "/stream"},
-                     {"codec", kBrowserCodec}, {"fps", kPreviewFps}, {"encoding", "rgb8"}});
+                     {"fps", kPreviewFps}, {"encoding", "rgb8"}});
       cameras.push_back(std::move(camera));
     }
     return {{"streaming", true}, {"transport", "fmp4"}, {"cameras", cameras},
@@ -770,6 +801,10 @@ class FocusPeakingRenderer {
 }
 async function sourceOpen(ms){if(ms.readyState==='open')return;await new Promise((ok,bad)=>{ms.addEventListener('sourceopen',ok,{once:true});ms.addEventListener('sourceclose',()=>bad(new Error('MediaSource closed')),{once:true})})}
 async function playCamera(camera,video,status){
+  const current=await (await fetch('/api/cameras',{cache:'no-store'})).json();
+  const latest=current.cameras.find(item=>item.id===camera.id);
+  if(!latest?.ready)throw new Error(latest?.error||'Waiting for images');
+  camera.codec=latest.codec;
   if(!window.MediaSource)throw new Error('This browser has no MediaSource support');
   const mime=`video/mp4; codecs="${camera.codec}"`;
   if(!MediaSource.isTypeSupported(mime))throw new Error(`Unsupported codec ${camera.codec}`);
@@ -912,6 +947,48 @@ class RosSpinner {
   std::thread thread_;
 };
 
+// Exercise the real RGB -> H.264 -> fragmented MP4 path without ROS discovery,
+// physical cameras, disk output or HTTP clients. Encoder enumeration is not enough.
+int check_encoder(const std::string& encoder, int width, int height, int count) {
+  if (encoder != "h264_nvenc" && encoder != "libx264" && encoder != "auto")
+    throw std::runtime_error("Encoder must be h264_nvenc, libx264 or auto");
+  if (width < 2 || width > 8192 || height < 2 || height > 8192 || (width & 1) || (height & 1) || count < 1 || count > 32)
+    throw std::runtime_error("Probe dimensions must be even, 2..8192; channels must be 1..32");
+  std::vector<std::unique_ptr<Fmp4Channel>> channels;
+  for (int i = 0; i < count; ++i)
+    channels.push_back(std::make_unique<Fmp4Channel>(4, "encoder-check-" + std::to_string(i), encoder));
+  auto image = std::make_shared<Image>();
+  image->width = width;
+  image->height = height;
+  image->encoding = "rgb8";
+  image->step = image->width * 3;
+  image->data.resize(image->step * image->height, 128);
+  const auto deadline = Clock::now() + 10s;
+  std::vector<bool> encoded(count, false);
+  while (Clock::now() < deadline) {
+    for (int i = 0; i < count; ++i) if (!encoded[i]) channels[i]->submit(image);
+    for (int i = 0; i < count; ++i) {
+      if (encoded[i]) continue;
+      Fmp4Channel::Fragment fragment;
+      encoded[i] = channels[i]->wait_for_fragment(0, fragment) && !fragment.bytes.empty();
+      const auto status = channels[i]->metadata();
+      if (!status.at("error").get<std::string>().empty())
+        throw std::runtime_error("Channel " + std::to_string(i) + ": " + status.at("error").get<std::string>());
+    }
+    if (std::all_of(encoded.begin(), encoded.end(), [](bool value) { return value; })) {
+      Json statuses = Json::array();
+      for (auto& channel : channels) {
+        const auto status = channel->metadata();
+        statuses.push_back({{"encoder", status.at("encoder")}, {"codec", status.at("codec")}});
+      }
+      std::cout << Json({{"success", true}, {"channels", statuses},
+        {"width", width}, {"height", height}}).dump() << '\n';
+      return 0;
+    }
+  }
+  throw std::runtime_error("Encoder check timed out without producing H.264 video");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -919,10 +996,21 @@ int main(int argc, char** argv) {
   av_log_set_level(AV_LOG_WARNING);
   if (argc > 1 && std::string(argv[1]) == "--help") {
     std::cout << "Usage: camera_tab_ros2_web_streamer [calibration.json] [port] [Mbit/s per camera]\n"
+                 "       camera_tab_ros2_web_streamer --check-encoder [h264_nvenc|libx264|auto] [width height channels]\n"
                  "Environment: CAMERA_CALIBRATION_FILE, ROS_IMAGE_TOPIC_TEMPLATE, "
                  "STREAMER_PORT, STREAMER_BITRATE_MBIT, STREAMER_ENCODER=auto|libx264|h264_nvenc\n"
                  "Input: sensor_msgs/msg/Image rgb8; output limit: 30 Hz.\n";
     return 0;
+  }
+  if (argc > 1 && std::string(argv[1]) == "--check-encoder") {
+    try {
+      if (argc != 2 && argc != 3 && argc != 6) throw std::runtime_error("Invalid arguments; see --help");
+      return check_encoder(argc >= 3 ? argv[2] : "h264_nvenc", argc == 6 ? std::stoi(argv[3]) : 1280,
+                           argc == 6 ? std::stoi(argv[4]) : 720, argc == 6 ? std::stoi(argv[5]) : 1);
+    } catch (const std::exception& error) {
+      spdlog::error("{}", error.what());
+      return 1;
+    }
   }
   struct sigaction action {};
   action.sa_handler = request_shutdown;
@@ -941,6 +1029,7 @@ int main(int argc, char** argv) {
         (encoder != "auto" && encoder != "h264_nvenc" && encoder != "libx264")) {
       throw std::runtime_error("Invalid port, bitrate or encoder; see --help");
     }
+    spdlog::info("Requested preview encoder: {}", encoder);
     rclcpp::init(0, nullptr, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);
     auto cameras = std::make_shared<RosCameraBank>(config_file, bitrate_mbit, encoder);
     RosSpinner spinner(cameras);

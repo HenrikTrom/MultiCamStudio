@@ -27,11 +27,20 @@ in [cfg/CameraCalibrationSettings.json](cfg/CameraCalibrationSettings.json).
   solver, and validation against new ROS images. Existing calibration versions are
   preserved before publishing a validated replacement.
 
-CPU encoding is the default. To expose an NVIDIA GPU for preview encoding:
+CPU encoding is the default. To use NVIDIA NVENC for previews
+(with the NVIDIA driver and NVIDIA Container Toolkit configured on the host):
 
 ```sh
-docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d --build --force-recreate
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml exec multicamstudio mcs-check-gpu
 ```
+
+Plain `docker compose up -d` does not load the GPU override. Keep both `-f`
+arguments when recreating a GPU installation. The override selects `h264_nvenc`
+for previews even if `.env` still contains a CPU preview default. Recording retains
+its separate `RECORD_ENCODER` setting. The check
+encodes a synthetic image; no camera publishers are required. See
+[GPU setup and troubleshooting](instructions.md#optional-gpu-encoding).
 
 Development is explicit and separate from normal startup:
 

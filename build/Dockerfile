@@ -91,6 +91,7 @@ COPY ros2_ws/src/ros2_multicam_interface/scripts/ /opt/mcs/ros2/lib/ros2_multica
 # Development is opt-in. It has source, compilers, npm, incremental ROS builds,
 # and Vite; normal startup never executes this entrypoint.
 FROM builder AS devel
+COPY --chmod=755 build/ros2/check-gpu.sh /usr/local/bin/mcs-check-gpu
 COPY --from=frontend-builder /build/web/ /workspaces/mcs-web/
 COPY ros2_ws/src/ros2_multicam_interface/scripts/ /workspaces/ros2_ws/src/ros2_multicam_interface/scripts/
 COPY --chmod=755 build/ros2/devel-entrypoint.sh /mcs-devel-entrypoint.sh
@@ -130,6 +131,7 @@ COPY build/modules/MultiCamStudio/content/result.gif /opt/mcs/web/calibration-gu
 COPY cfg/CameraCalibrationSettings.json /home/docker/workspace/cfg/CameraCalibrationSettings.json
 COPY --chmod=755 build/ros2/entrypoint.sh /mcs-entrypoint.sh
 COPY --chmod=755 build/ros2/check-runtime.sh /usr/local/bin/mcs-check-runtime
+COPY --chmod=755 build/ros2/check-gpu.sh /usr/local/bin/mcs-check-gpu
 ENV HOME=/tmp ROS_LOG_DIR=/tmp/mcs-ros-logs FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
     PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     CAMERA_CALIBRATION_FILE=/home/docker/workspace/cfg/CameraCalibrationSettings.json \

@@ -1,8 +1,9 @@
-# Optional NVENC access: docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d
+# NVENC previews: docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d
 services:
   multicamstudio:
     gpus: all
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
-      STREAMER_ENCODER: h264_nvenc
+      # The GPU-specific override replaces the CPU preview default in an existing .env.
+      STREAMER_ENCODER: ${GPU_STREAMER_ENCODER:-h264_nvenc}

@@ -93,19 +93,39 @@ connection status instead of being labeled LIVE.
   30 Hz encoding ceiling. Slower publishers are not duplicated or accelerated.
 - Dimensions are learned from the first valid image. Restart the preview service
   after a resolution change. Recording and calibration validate one shared resolution across all cameras.
-- Browser transport is H.264 High level 4.2 in fragmented MP4 with the reference
-  streamer's 13-byte record framing. H.264 MediaSource support is required.
+- Browser transport is H.264 High in fragmented MP4 with the reference streamer's
+  13-byte record framing. The encoder selects the level for the actual dimensions;
+  the browser's `avc1` codec string comes from the encoded SPS. H.264 MediaSource
+  support is required. 2048x1536 requires a higher level than 4.2.
 - The default `STREAMER_ENCODER=libx264` uses CPU encoding and skips GPU probes.
   `STREAMER_ENCODER=auto` is also available to try NVENC with CPU fallback.
 
 For NVIDIA acceleration with NVIDIA Container Toolkit installed:
 
 ```sh
-docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d --build --force-recreate
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml exec multicamstudio mcs-check-gpu
 ```
 
-The GPU override exposes the video driver and selects `h264_nvenc` explicitly.
-CPU throughput depends on the number and resolution of the cameras.
+The GPU override exposes the video driver and selects `h264_nvenc` explicitly for
+previews, overriding the base configuration's CPU preview default.
+It requires Docker Compose >= 2.30, a working host NVIDIA driver, NVIDIA Container
+Toolkit, and a GPU supporting NVENC H.264. Always keep both Compose files when
+recreating the service. Use `GPU_STREAMER_ENCODER` to override the preview choice
+in GPU mode. Recording keeps its separate `RECORD_ENCODER` setting and CPU default.
+CPU throughput depends on camera count and resolution.
+
+`mcs-check-gpu` encodes synthetic 1280x720 RGB through the preview's real H.264/fMP4
+path without initializing ROS discovery or accessing cameras. The native command
+is `camera_tab_ros2_web_streamer --check-encoder [h264_nvenc|libx264|auto] [width height channels]`, with
+`h264_nvenc` as the probe default. Explicit `h264_nvenc` never falls back to CPU;
+only `auto` permits fallback. No FFmpeg CLI or compiler is needed in production.
+After stopping active previews, use `mcs-check-gpu 2048 1536 8` to test eight
+simultaneous sessions at that resolution. The check reports the actual encoder
+and browser codec for each channel. It does not benchmark sustained frame rate.
+The regression script `test/test_encoder.py` checks 2048x1536 with CPU encoding;
+use `--encoder h264_nvenc --channels 8` in a GPU-enabled test container to check
+concurrent NVENC sessions. `STREAMER_EXECUTABLE` can select a freshly built binary.
 
 ## Recording
 
@@ -145,7 +165,8 @@ not duplicated; do not assume videos are constant frame rate. Each camera's
 matching queue holds at most 32 images. `RECORD_START_TIMEOUT_SEC` defaults to 15
 and `RECORD_STALL_TIMEOUT_SEC` to 5. `RECORD_ENCODER` defaults to `libx264`; selecting
 `h264_nvenc` also requires GPU exposure and available encoder sessions. Preview
-and recording encoder choices are independent.
+and recording encoder choices are independent. The GPU override only selects
+NVENC for previews, preserving encoder-session capacity for those previews.
 
 ## Calibration workflow
 
